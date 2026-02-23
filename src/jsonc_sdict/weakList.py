@@ -73,14 +73,13 @@ class WeakList[H, O = H](Sequence[H]):
     def _cmp(
         self,
         other: Comparable,
-        cmp: Callable[[H, H], bool] | Callable[[int, int], bool],
-        skipEq=False,
+        cmp: Callable[[Any, Any], bool],
     ):
         for i, j in zip(self, other):
-            if skipEq and i == j:
+            if i == j:
                 continue
             return cmp(i, j)
-        return cmp(len(self), len(other))  # cmp(len(self), len(other))
+        return cmp(len(self), len(other))
 
     def __init__(self, data: Iterable[H] = (), noRepeat=False):
         """
@@ -104,7 +103,7 @@ class WeakList[H, O = H](Sequence[H]):
         return id(self)
 
     def __lt__(self, other: Comparable[O]):
-        return self._cmp(other, lambda a, b: a < b, skipEq=True)
+        return self._cmp(other, lambda a, b: a < b)
 
     def __le__(self, other: Comparable[O]):
         return self._cmp(other, lambda a, b: a <= b)
@@ -120,7 +119,7 @@ class WeakList[H, O = H](Sequence[H]):
         return self._cmp(value, lambda a, b: a != b)
 
     def __gt__(self, other: Comparable[O]):
-        return self._cmp(other, lambda a, b: a > b, skipEq=True)
+        return self._cmp(other, lambda a, b: a > b)
 
     def __ge__(self, other: Comparable[O]):
         return self._cmp(other, lambda a, b: a >= b)
@@ -178,9 +177,13 @@ class WeakList[H, O = H](Sequence[H]):
             return WeakList(noRepeat=self.noRepeat)
         elif other == 1:
             return wl
+        
+        length = len(self)
         key = self._newkey()
         new_dict = {
-            (o * i) + key: v for o in range(other - 1) for i, v in enumerate(self)
+            (o * length) + i + key: v 
+            for o in range(other - 1) 
+            for i, v in enumerate(self)
         }
         wl.dict.update(new_dict)
         return wl
@@ -191,11 +194,16 @@ class WeakList[H, O = H](Sequence[H]):
     def __imul__(self, other: int):
         if other < 1:
             self.dict.clear()
+            return self
         if other <= 1:
             return self
+            
+        length = len(self)
         key = self._newkey()
         new_dict = {
-            (o * i) + key: v for o in range(other - 1) for i, v in enumerate(self)
+            (o * length) + i + key: v 
+            for o in range(other - 1) 
+            for i, v in enumerate(self)
         }
         self.dict.update(new_dict)
         return self
@@ -224,40 +232,37 @@ class WeakList[H, O = H](Sequence[H]):
         Args:
             index: Position to insert the object (supports negative indices,
                    0 ≤ normalized index ≤ len(self) is allowed).
-            object: The object to insert (MUST support both __hash__ and __weakref__).
+            obj: The object to insert (MUST support both __hash__ and __weakref__).
 
         Raises:
             TypeError: If the object lacks __hash__ or __weakref__ (required for WeakValueDictionary).
             IndexError: If the index is out of bounds (after normalizing negative indices).
         """
-        # check_hashWeak(obj)
-        # 2. 处理noRepeat：若开启去重，先删除已存在的重复项（保证有序集合特性）
-        if self.noRepeat:
-            for k, v in list(self.dict.items()):  # list()避免遍历中修改dict
-                if v == obj:
-                    del self.dict[k]
-                    # 重复项删除后长度变化，重新校准索引
-                    current_len = len(self)
-                    if index > current_len:
-                        index = current_len
-                    break  # 去重仅保留一个，找到即退出
-
-        # 3. 标准化索引（兼容负数/越界场景，符合Python list.insert的行为）
+        # 1. 处理索引标准化（兼容负数）
         current_len = len(self)
-        # 负数索引转换为正数（如 index=-1 → 插入到最后位置）
         if index < 0:
             index += current_len
-        # 边界修正：insert允许在 0 ~ len(self) 范围内插入（超出则归到边界）
         index = max(0, min(index, current_len))
 
-        # 4. 核心插入逻辑：重构dict以保证有序性
-        # 步骤1：获取当前有序的value列表（对应原列表顺序）
+        # 2. 核心插入逻辑：先获取当前有序值
         current_values = list(self.dict.values())
-        # 步骤2：在指定索引插入新对象
+
+        # 3. 处理noRepeat：若开启去重，先删除已存在的重复项
+        if self.noRepeat:
+            try:
+                old_idx = current_values.index(obj)
+                current_values.pop(old_idx)
+                # 如果删除的元素在插入位置之前，后续插入逻辑的索引需要前移
+                if old_idx < index:
+                    index -= 1
+            except ValueError:
+                pass
+
+        # 4. 在指定位置插入
         current_values.insert(index, obj)
-        # 步骤3：重新生成连续的key（避免key混乱，保持原设计的key递增特性）
+        
+        # 5. 重构dict以保证有序性和key连续性
         new_dict = {i: val for i, val in enumerate(current_values)}
-        # 步骤4：更新WeakValueDictionary并清理缓存
         self.dict.clear()
         self.dict.update(new_dict)
 
@@ -353,22 +358,30 @@ class Value[V = None]:
     def __repr__(self):
         return f"{self.v}"
 
-    def __lt__(self, other: V) -> bool:
+    def __lt__(self, other: Any) -> bool:
+        if isinstance(other, Value):
+            return self.v < other.v
         return self.v < other
 
-    def __le__(self, other: V) -> bool:
-        return self.v < other
+    def __le__(self, other: Any) -> bool:
+        if isinstance(other, Value):
+            return self.v <= other.v
+        return self.v <= other
 
     def __eq__(self, value: object) -> bool:
-        if self.v is value:
-            return True
+        if isinstance(value, Value):
+            return self.v == value.v
         return self.v == value
 
     def __ne__(self, value: object) -> bool:
         return not self.__eq__(value)
 
-    def __gt__(self, other: V) -> bool:
-        return self.v < other
+    def __gt__(self, other: Any) -> bool:
+        if isinstance(other, Value):
+            return self.v > other.v
+        return self.v > other
 
-    def __ge__(self, other: V) -> bool:
-        return self.v < other
+    def __ge__(self, other: Any) -> bool:
+        if isinstance(other, Value):
+            return self.v >= other.v
+        return self.v >= other
