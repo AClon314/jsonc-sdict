@@ -9,18 +9,17 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
 ]
 dependencies = ["deepdiff"]
 description = "keep comment(round-trip) when read & write jsonc/json5, signal dict with recording extra context(parent/keypath)"
 keywords = ["config", "json", "jsonc", "json5", "round-trip", "comment", "signal", "angular", "benedict"]
 name = "jsonc_sdict"
 readme = "README.md"
-requires-python = ">=3.11"
-version = "0.1.20260222"
+requires-python = ">=3.13"
+version = "0.1.20260224"
 
 [[project.authors]]
 email = "nolca@qq.com"
@@ -33,5 +32,5 @@ file = "LICENSE"
 dev = ["pytest"]
 
 [project.urls]
-Download = "http://github.com/AClon314/jsonc_sdict/releases"
-Homepage = "http://github.com/AClon314/jsonc_sdict"
+Download = "http://github.com/AClon314/jsonc-sdict/releases"
+Homepage = "http://github.com/AClon314/jsonc-sdict"

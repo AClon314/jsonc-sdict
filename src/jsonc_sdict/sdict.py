@@ -3,13 +3,13 @@ because list is not hashable, so list is designed for:
 - don't treat like key name: see `type Key`
 """
 
-from weakref import WeakSet
 from collections import UserDict
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from functools import cached_property
 from typing import Any, TypeGuard, cast
 
 from jsonc_sdict.share import in_range
+from jsonc_sdict.weakList import WeakList
 
 type Key[K = Any, V = sdict] = K | int | list[Callable[[V], bool]]
 """jdict[ dict:Key | list:int-index | dict:[mySelectFunc(value)->bool] ]"""
@@ -23,12 +23,12 @@ type NestDict[K = str, Leaf = Any] = "dict[K, NestDict[K, Leaf] | Leaf]"
 type NestJDict[K = str, Leaf = Any] = "sdict[K, NestJDict[K, Leaf] | Leaf]"
 type NestMap[K = str, Leaf = Any] = "Mapping[K, NestMap[K, Leaf] | Leaf]"
 type NestMutMap[K = str, Leaf = Any] = "MutableMapping[K, NestMutMap[K, Leaf] | Leaf]"
-type NestDictList[
-    K = str, Leaf = Any
-] = "dict[K, list[NestDictList[K, Leaf]] | list[Leaf]]"
-type NestMapIter[
-    K = str, Leaf = Any
-] = "Mapping[K, Iterable[NestMapIter[K, Leaf]] | Iterable[Leaf]]"
+type NestDictList[K = str, Leaf = Any] = (
+    "dict[K, list[NestDictList[K, Leaf]] | list[Leaf]]"
+)
+type NestMapIter[K = str, Leaf = Any] = (
+    "Mapping[K, Iterable[NestMapIter[K, Leaf]] | Iterable[Leaf]]"
+)
 
 
 def get_item[D](
@@ -49,7 +49,7 @@ def get_item[D](
     """
     try:
         for k in keys:
-            obj = obj[k]  # type: ignore
+            obj = obj[k]
         return obj
     except noRaise:
         return default
@@ -88,78 +88,78 @@ def iterable[V](obj: Iterable[V] | Any) -> TypeGuard[Iterable[V]]:
     return isinstance(obj, Iterable) and not isinstance(obj, (str, bytes))
 
 
-# TODO: cache?
 def dfs[K = int, V = Any](
     obj: Node[K, V],
     maxDepth=float("inf"),
     List=True,
     *,
-    parent: WeakSet[sdict] = WeakSet(),
+    parent: WeakList["sdict"] = WeakList(),
     keypath: KeyPaths = (),
-    pathCount: PathCount = (),
+    pathCount: PathCount = (0,),
 ):
     """
     do NOT update scaned/yielded data while iterating.
     Args:
         maxDepth: deepest of dfs, stop digging if deeper
         parent: 只能存储强引用
-    """
-    isIter = iterable(obj)
-    if not (obj and isIter and len(keypath) <= maxDepth):
-        return locals()  # 方便诊断
 
-    pathCount = (*pathCount, 1)
-    _parent = list(parent)
-    isMap = isinstance(obj, Mapping)
-    if isMap:
-        yield sdict(
+    Usage:
+    ```python
+    for v in dfs(myDict):
+        ...
+
+    # if you offen dfs the same dict-object twice or even more, use cache:
+    from jsonc_sdict import dfs, copy_args
+    dfs_cache = lru_cache(maxsize=4096)(dfs)
+    # if you like some type hint:
+    # dfs_cache = copy_args(dfs)(lru_cache(maxsize=4096)(dfs))
+    for v in dfs_cache(myDict):
+        ...
+    ```
+    """
+    if not (obj and iterable(obj) and len(keypath) <= maxDepth):
+        return obj
+
+    pathCount = (*pathCount[:-1], pathCount[-1] + 1)
+    if isinstance(obj, sdict):
+        # update
+        obj.parent = parent
+        obj.keypath = keypath
+        obj.pathCount = pathCount
+        self = obj
+    elif isinstance(obj, Mapping):
+        self = sdict(
             obj,
             # deep==True等价于执行dfs()，所以False即可
             deep=False,
-            _parent=_parent,
+            parent=parent,
             keypath=keypath,
             pathCount=pathCount,
         )
-    else:
-        ...
-    MapOrIter = obj.items() if isMap else enumerate(obj)
-    for k, v in MapOrIter:
-        if not isinstance(v, Iterable):
-            yield k, v
-        keypath = (*keypath, [k])
-        if isinstance(v, Mapping):
-            print(keypath)
-            if isinstance(v, sdict):
-                # update
-                v._parent = _parent
-                v.keypath = keypath
-                v.pathCount = pathCount
-                yield k, v
-            else:
-                yield k, sdict(
-                    v,
-                    # deep==True等价于执行dfs()，所以False即可
-                    deep=False,
-                    _parent=_parent,
-                    keypath=keypath,
-                    pathCount=pathCount,
-                )
-        else:
-            v = cast(Iterable, v)
-            if not List:
-                return
-            yield from dfs(
-                v,
-                maxDepth=maxDepth,
-                parent=(obj,),
-                keypath=keypath,
-                pathCount=pathCount,
-            )
-    # keypath.pop()
-    # pathCount.pop()
+    elif List:
+        self = sdict(
+            ref=obj, deep=False, parent=parent, keypath=keypath, pathCount=pathCount
+        )
+    yield self
+    children = (
+        (k, v)
+        for k, v in (obj.items() if isinstance(obj, Mapping) else enumerate(obj))
+        if iterable(v) and (List or isinstance(v, Mapping))
+    )
+    for k, v in children:
+        ret = yield from dfs(
+            v,
+            maxDepth=maxDepth,
+            List=List,
+            parent=WeakList((self,)),
+            keypath=(*keypath, [k]),
+            pathCount=pathCount,
+        )
+        self[k] = ret
+    return obj
 
 
-class sdict[K = str, V = Any, KP = Any, R = Any](UserDict[K, V]):
+class sdict[K = str, V = Any, R = Any, KP = Any](UserDict[K, V]):
     """
     signal dict, or "dict design for json in actual business", like benedict, but less limitation, more useful context, more strict type hint.
 
@@ -170,7 +170,6 @@ class sdict[K = str, V = Any, KP = Any, R = Any](UserDict[K, V]):
             所有嵌套层的类型可能性
     """
 
-    type SliceInt = slice[int, int, int]
     type IterAsMap = Iterable[tuple[K, V]] | Iterable[Iterable[K | V]]
 
     def __init__(
@@ -179,24 +178,24 @@ class sdict[K = str, V = Any, KP = Any, R = Any](UserDict[K, V]):
         ref: R | None = None,
         *,
         deep=True,
-        parent: WeakSet[V] = WeakSet(),
+        parent: WeakList[V] = WeakList(),
         keypath: KeyPaths[KP, Any] = (),
-        pathCount: PathCount = (),
+        pathCount: PathCount = (0,),
     ):
         """
         Args:
             data: `self.data = {**data}`, which unpack and create **shallow** copy (👍recommended, full-feature)
-            ref: `self.ref = data`, +1 reference counter in memory\n
-                `sdict(ref=myBenedict)` # keep `myBenedict` instance's orginal methods\n
+            ref: +1 reference\n
+                `sdict(ref=myPydanticModel)` # keep `myPydanticModel` instance's orginal methods\n
                 `s=sdict(ref=ref(hashableObj)); s.ref()` # return **None** after `del hashableObj`\n
                 `s=sdict(ref=proxy(hashableObj)); s.ref` # raise **ReferenceError** after `del hashableObj`
             deep: exec `dfs()`/`sdict.rebuild()`, create **deep** copy, slower when init
-            _parent: 存储强引用, 等待全部转为sdict后，二次转为WeakSet弱引用
+            parent: weakref of parent
         """
-        super().__init__(data)  # type: ignore
+        super().__init__(data)
         self.ref = ref
+        """can storage pydantic_model_data, list_data..."""
         self.parent = parent
-        """存储强引用, 等待全部转为sdict后，二次转为WeakSet弱引用"""
         self.keypath = keypath
         self.pathCount = pathCount
         if deep:
@@ -206,7 +205,14 @@ class sdict[K = str, V = Any, KP = Any, R = Any](UserDict[K, V]):
         """build index/cache entirely.\n
         currently I recommand re-init a sdict instance if you want to **treat a child as new root node**, by `sdict(myChild_as_NewRoot_oldSdict)`
         """
-        self.data = dict(dfs(self.data, parent=self._parent, keypath=self.keypath, pathCount=self.pathCount))  # type: ignore
+        self.data = dict(
+            dfs(
+                self.data,
+                parent=self.parent,
+                keypath=self.keypath,
+                pathCount=self.pathCount,
+            )
+        )
         try:
             # rebuild cache
             del self.childkeys
@@ -214,10 +220,10 @@ class sdict[K = str, V = Any, KP = Any, R = Any](UserDict[K, V]):
             pass
 
     def getitem(self, key: Iterable[K]):
-        """override this func when you want to `getAttr()`, by default only getItem()"""
+        """override this func when you want to `getAttr()`, by default only get_item()"""
         return get_item(self.data, key, noRaise=())
 
-    def __getitem__(self, key: K | Iterable[K] | SliceInt | Any):
+    def __getitem__(self, key: K | Iterable[K] | slice[int | None] | Any):
         if iterable(key) and not isinstance(key, Mapping):
             v = self.getitem(key)
         elif isinstance(key, slice):
@@ -234,16 +240,16 @@ class sdict[K = str, V = Any, KP = Any, R = Any](UserDict[K, V]):
     def __hash__(self):
         return id(self)
 
-    def keys_flat(self, slice: SliceInt = slice(None), List=True):
+    def keys_flat(self, slice: slice[int | None] = slice(None), List=True):
         """like benedict.keypaths()"""
         for K, _ in self.items_flat(slice=slice, List=List):
             yield K
 
-    def values_flat(self, slice: SliceInt = slice(None), List=True):
+    def values_flat(self, slice: slice[int | None] = slice(None), List=True):
         for _, v in self.items_flat(slice=slice, List=List):
             yield v
 
-    def items_flat(self, slice: SliceInt = slice(None), List=True):
+    def items_flat(self, slice: slice[int | None] = slice(None), List=True):
         # https://github.com/python/cpython/issues/87122#issuecomment-1828385975
         for _, v in dfs(self.data, List=List):
             if isinstance(v, sdict) and in_range(v.depth, slice):
