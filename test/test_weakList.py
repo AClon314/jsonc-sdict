@@ -1,3 +1,4 @@
+from weakref import WeakSet
 import gc
 import pytest
 
@@ -7,13 +8,12 @@ from share import get_caller
 
 class WeakList(weaklist):
     def __getattribute__(self, name: str):
-        if name not in ("dict", "_reverse_dict", "_next_key", "noRepeat"):
+        if name not in ("dict",):
             try:
-                # Use super().__getattribute__ to avoid recursion
-                d = super().__getattribute__("dict")
-                print(dict(d), "\t", get_caller())
+                d = dict(object.__getattribute__(self, "dict"))  # avoid recursion
             except AttributeError:
-                pass
+                d = self
+            print(d, "\t", get_caller("jsonc_sdict.weakList"))
         return super().__getattribute__(name)
 
 
@@ -133,10 +133,13 @@ class TestBasic:
         """测试弱引用核心特性"""
         v1 = Ref(1)
         v2 = Ref(2)
-        wl = WeakList([v1, v2, v1], noRepeat=True)
-        # In new logic, duplicates move to end, so [v1, v2, v1] -> [v2, v1]
+        ws = WeakSet((v1, v2, v1))
+        wl = WeakList((v1, v2, v1), noRepeat=True)
+        assert tuple(ws) == (v1, v2), f"初始化去重失败，预期 (v1, v2)，实际 {ws}"
         assert wl.tuple == (v2, v1), f"初始化去重失败，预期 (v2, v1)，实际 {wl.tuple}"
         del v1  # 删除外部引用，弱引用失效
+        gc.collect()  # del v1还不够，强制触发gc回收才行
+        assert tuple(ws) == (v2,), f"弱引用失效失败，预期 (v2)，实际 {ws}"
         assert wl.tuple == (v2,), f"弱引用失效失败，预期 (v2,)，实际 {wl.tuple}"
 
     def test_initialization_and_len(self):
