@@ -1,20 +1,21 @@
-from weakref import WeakSet
 import gc
-import pytest
+from weakref import WeakSet
 
+import pytest
 from jsonc_sdict.weakList import Ref, WeakList as weaklist, OrderedWeakSet
 from share import get_caller
 
 
 class WeakList(weaklist):
-    def __getattribute__(self, name: str):
-        if name not in ("dict",):
-            try:
-                d = dict(object.__getattribute__(self, "dict"))  # avoid recursion
-            except AttributeError:
-                d = self
-            print(d, "\t", get_caller("jsonc_sdict.weakList"))
-        return super().__getattribute__(name)
+    pass
+    # def __getattribute__(self, name: str):
+    #     if name not in ("dict",):
+    #         try:
+    #             d = dict(object.__getattribute__(self, "dict"))  # avoid recursion
+    #         except AttributeError:
+    #             d = self
+    #         print(d, "\t", get_caller("jsonc_sdict.weakList"))
+    #     return super().__getattribute__(name)
 
 
 class TestOrderedWeakSet:
@@ -139,8 +140,14 @@ class TestBasic:
         assert wl.tuple == (v2, v1), f"初始化去重失败，预期 (v2, v1)，实际 {wl.tuple}"
         del v1  # 删除外部引用，弱引用失效
         gc.collect()  # del v1还不够，强制触发gc回收才行
+        assert bool(ws)
+        assert bool(wl)
         assert tuple(ws) == (v2,), f"弱引用失效失败，预期 (v2)，实际 {ws}"
         assert wl.tuple == (v2,), f"弱引用失效失败，预期 (v2,)，实际 {wl.tuple}"
+        del v2
+        gc.collect()
+        assert not bool(ws)
+        assert not bool(wl)
 
     def test_initialization_and_len(self):
         """测试基础初始化和长度"""
@@ -218,9 +225,9 @@ class TestInsert:
         v5 = Ref(5)
         wl = WeakList([v1, v2])
         wl.insert(100, v5)  # 超出长度，插入到最后
-        assert wl.tuple[-1].v == 5, (
-            f"越界索引insert失败，最后一个元素应为5，实际 {wl.tuple[-1].v}"
-        )
+        assert (
+            wl.tuple[-1].v == 5
+        ), f"越界索引insert失败，最后一个元素应为5，实际 {wl.tuple[-1].v}"
 
     def test_insert_no_repeat(self):
         """测试noRepeat模式下的插入去重"""
@@ -238,9 +245,9 @@ class TestInsert:
         v1 = Ref(1)
         wl_empty = WeakList()
         wl_empty.insert(0, v1)
-        assert wl_empty.tuple == (v1,), (
-            f"空列表insert失败，预期 (v1,)，实际 {wl_empty.tuple}"
-        )
+        assert wl_empty.tuple == (
+            v1,
+        ), f"空列表insert失败，预期 (v1,)，实际 {wl_empty.tuple}"
 
 
 class TestPop:
@@ -334,9 +341,9 @@ class TestGetSetItem:
         v2 = Ref(2)
         wl_no_repeat = WeakList([v1, v2], noRepeat=True)
         wl_no_repeat[1] = v1
-        assert wl_no_repeat.tuple == (v1,), (
-            f"__setitem__去重错误，预期 (v1,)，实际 {wl_no_repeat.tuple}"
-        )
+        assert wl_no_repeat.tuple == (
+            v1,
+        ), f"__setitem__去重错误，预期 (v1,)，实际 {wl_no_repeat.tuple}"
 
 
 class TestNoRepeat:
@@ -368,14 +375,18 @@ class TestNoRepeat:
         wl = WeakList([v1, v2, v3], noRepeat=True)
         # 移动 v3 到索引 0
         wl.insert(0, v3)
-        assert wl.tuple == (v3, v1, v2), (
-            f"insert move失败, 预期 (v3, v1, v2), 实际 {wl.tuple}"
-        )
+        assert wl.tuple == (
+            v3,
+            v1,
+            v2,
+        ), f"insert move失败, 预期 (v3, v1, v2), 实际 {wl.tuple}"
         # 移动 v1 到索引 2 (末尾)
         wl.insert(2, v1)
-        assert wl.tuple == (v3, v2, v1), (
-            f"insert move失败, 预期 (v3, v2, v1), 实际 {wl.tuple}"
-        )
+        assert wl.tuple == (
+            v3,
+            v2,
+            v1,
+        ), f"insert move失败, 预期 (v3, v2, v1), 实际 {wl.tuple}"
 
     def test_dict_swap_sync_no_repeat_false(self):
         """测试 noRepeat=False 时 dict_swap 依然同步"""
@@ -457,9 +468,9 @@ class TestMiscMethods:
         v2 = Ref(2)
         wl_misc = WeakList([v1, v2])
         wl_copy = wl_misc.copy()
-        assert wl_copy.tuple == wl_misc.tuple, (
-            f"copy错误，预期 {wl_misc.tuple}，实际 {wl_copy.tuple}"
-        )
+        assert (
+            wl_copy.tuple == wl_misc.tuple
+        ), f"copy错误，预期 {wl_misc.tuple}，实际 {wl_copy.tuple}"
 
     def test_clear(self):
         """测试clear方法"""

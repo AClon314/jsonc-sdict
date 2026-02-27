@@ -1,11 +1,12 @@
 """
 wrapper of Weak*Dictionary
+- Life cycle: long-lived
 """
 
 import sys
 from weakref import WeakKeyDictionary, WeakValueDictionary
 from collections.abc import Callable, Iterable, MutableSet, Sequence, Sized, Iterator
-from typing import Any, Protocol
+from typing import Any, Protocol, overload
 from useful_types import SupportsDunderGT, SupportsDunderLT
 
 from jsonc_sdict.share import RAISE, check_hashWeak
@@ -24,8 +25,18 @@ class WeakList[H](Sequence[H]):
     """
     If you hate strict type, init like `wl=Weaklist[Any](...)` or `wl=Weaklist[..., Any](...)`
 
-    Inner:
-        self.dict.keys(), new key > old last key, `1,2,7,11,[new_key>11]`
+    ### WeakList(..., noRepeat=True) ≠ OrderedWeakSet()
+        self.dict.keys(), new key > old last key, `1,2,7,11,[new_key>11]`, auto controlled by _new_key \n
+        ```python
+        v1, v2 = Ref(1), Ref(2)
+        wl = WeakList([v1, v2], noRepeat=True)
+        ws = OrderedWeakSet([v1, v2])
+        print(wl, ws) # 1,2
+        wl.append(v1)
+        ws.append(v1)
+        print(wl) # 2, 1    # respect user's latest/newest index order
+        print(ws) # 1, 2    # deny repeated obj, and keep original order
+        ```
     """
 
     dict: WeakValueDictionary[int, H]
@@ -152,6 +163,10 @@ class WeakList[H](Sequence[H]):
     def __len__(self) -> int:
         return len(self.dict)
 
+    @overload
+    def __getitem__(self, index: int) -> H: ...
+    @overload
+    def __getitem__(self, index: slice[int | None]) -> list[H]: ...
     def __getitem__(self, index: int | slice[int | None]) -> H | list[H]:
         if isinstance(index, slice):
             return list(self)[index]

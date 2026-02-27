@@ -1,11 +1,34 @@
 """shared static public lib"""
 
-from collections.abc import Callable
-from typing import Any, ParamSpec, TypeVar, cast
+import os
+import logging
+from collections.abc import Callable, Iterable
+from typing import Any, ParamSpec, TypeGuard, TypeVar, cast
 
 
-type RAISE = "❌"  # type:ignore
+type RAISE = "RAISE"  # type:ignore
 """allow raise by default"""
+type UNSET = "UNSET"  # type: ignore
+"""do NOT use this arg, like undefined"""
+type NONE = "NONE"  # type: ignore
+"""gen.send(NONE) to give None as new value"""
+
+LOG = os.environ.get("LOG", "INFO").upper()
+IS_DEBUG = LOG == "DEBUG" or os.environ.get("TERM_PROGRAM", None)
+logging.basicConfig(format="%(levelname)s %(asctime)s %(name)s:%(lineno)d\t%(message)s")
+if IS_DEBUG:
+    LOG = "DEBUG"
+
+
+def getLogger(name: str | None = None) -> logging.Logger:
+    Log = logging.getLogger(__name__)
+    Log.setLevel(LOG)
+    return Log
+
+
+def iterable[V](obj: Iterable[V] | Any) -> TypeGuard[Iterable[V]]:
+    """Iterable but NOT str, bytes"""
+    return isinstance(obj, Iterable) and not isinstance(obj, (str, bytes, bytearray))
 
 
 def in_range(v: int, Slice: slice) -> bool:
@@ -52,6 +75,89 @@ def in_range(v: int, Slice: slice) -> bool:
                 return stop < v <= start and (v - start) % step == 0
 
 
+def valid_len(len: int, Slice: slice) -> int:
+    """
+    计算对长度为 len 的序列应用指定切片后，得到的新序列的有效长度
+
+    参数:
+        len: int - 原序列的长度（必须非负）
+        Slice: slice - 要应用的切片对象
+
+    返回:
+        int - 切片后的有效长度（非负）
+
+    异常:
+        ValueError - 当原长度为负数，或切片的 step 为 0 时抛出
+    """
+    # 校验原长度合法性
+    if len < 0:
+        raise ValueError("原序列长度不能为负数")
+
+    # 处理空序列的特殊情况（直接返回0）
+    if len == 0:
+        return 0
+
+    # 提取切片的start、stop、step，并处理默认值
+    start = Slice.start
+    stop = Slice.stop
+    step = Slice.step if Slice.step is not None else 1
+
+    # 校验step合法性（Python原生切片不允许step=0）
+    if step == 0:
+        raise ValueError("切片的步长(step)不能为0")
+
+    # --------------------------
+    # 第一步：处理start的有效索引
+    # --------------------------
+    if start is None:
+        # step为正，start默认从0开始；step为负，start默认从最后一个元素(len-1)开始
+        effective_start = 0 if step > 0 else len - 1
+    else:
+        # 转换负数索引为正数
+        effective_start = start if start >= 0 else len + start
+        # 处理超出范围的start：
+        # - step为正，start < 0 则取0；start >= len 则取len
+        # - step为负，start >= len 则取len-1；start < 0 则取-1（后续判断会直接返回0）
+        if step > 0:
+            effective_start = max(0, min(effective_start, len))
+        else:
+            effective_start = max(-1, min(effective_start, len - 1))
+
+    # --------------------------
+    # 第二步：处理stop的有效索引
+    # --------------------------
+    if stop is None:
+        # step为正，stop默认到len；step为负，stop默认到-1（超出左边界）
+        effective_stop = len if step > 0 else -1
+    else:
+        # 转换负数索引为正数
+        effective_stop = stop if stop >= 0 else len + stop
+        # 处理超出范围的stop：
+        # - step为正，stop < 0 则取0；stop > len 则取len
+        # - step为负，stop > len-1 则取len-1；stop < -1 则取-1
+        if step > 0:
+            effective_stop = max(0, min(effective_stop, len))
+        else:
+            effective_stop = max(-1, min(effective_stop, len - 1))
+
+    # --------------------------
+    # 第三步：计算有效长度
+    # --------------------------
+    if step > 0:
+        # 步长为正：start >= stop 时，有效长度为0；否则计算 (stop - start) // step
+        if effective_start >= effective_stop:
+            return 0
+        else:
+            # 公式：元素个数 = ((结束索引 - 起始索引) + 步长 - 1) // 步长 （向上取整）
+            return (effective_stop - effective_start + step - 1) // step
+    else:
+        # 步长为负：start <= stop 时，有效长度为0；否则计算 (start - stop) // abs(step)
+        if effective_start <= effective_stop:
+            return 0
+        else:
+            return (effective_start - effective_stop + abs(step) - 1) // abs(step)
+
+
 PS = ParamSpec("PS")
 TV = TypeVar("TV")
 
@@ -77,27 +183,3 @@ def check_hashWeak(obj: Any):
             f"Inserted object {obj!r} must support __hash__ and __weakref__ "
             "(e.g. custom class instances, not dict/list/basic types like int/str)"
         ) from e
-
-
-def test():
-    # 测试无步长场景
-    assert in_range(2, slice(0, 5)) == True
-    assert in_range(5, slice(0, 5)) == False
-
-    # 测试有步长+stop=None场景
-    assert in_range(3, slice(1, None, 2)) == True  # 1,3,5...
-    assert in_range(4, slice(1, None, 2)) == False
-
-    # 测试负步长场景
-    assert in_range(4, slice(5, 0, -1)) == True  # 5,4,3,2,1
-    assert in_range(0, slice(5, 0, -1)) == False
-
-    # 测试异常场景（验证报错）
-    try:
-        in_range(1, slice(0, 5, 0))
-    except ValueError as e:
-        assert str(e) == "slice step cannot be zero"
-
-
-if __name__ == "__main__":
-    test()

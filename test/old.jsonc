@@ -1,6 +1,6 @@
 /** aclon314 {} */ // umiki {} / * molia *    /
 // head /* head {} */ // head
-{
+/* https://github.com/rliebz/dotfiles/blob/eddb966224d7b5b8eeb72c53cc458e11b6094a5f/markdownlint.jsonc#L3 */ {
   // "": null,
   "0": 0, // 0
   // "1": 1, /* 1 */
@@ -14,5 +14,11 @@
   /* 7 */ "7": 7,
   "8": 8, /* 8 */
   // "9": 9
+  "/-node": {
+    "just ignore these": "i am in node comment"
+  },
+  "node": {
+    "do not ignore me": "i am real data!"
+  }
 }
 // eof

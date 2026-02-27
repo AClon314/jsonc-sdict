@@ -5,6 +5,7 @@
 **/.env
 **/*.lock
 **/tmp/
+.vscode/
 
 *.egg-info/
 *.log

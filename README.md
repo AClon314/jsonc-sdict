@@ -1,10 +1,11 @@
 # jsonc_sdict 即典
 
-maybe is the only solution that keep comments(round trip) as data.
+- jsonc, maybe is the only solution that keep comments(round trip) as data.
+- sdict = [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
 
 ## inner principle
 
-- treated comments like actual data by `comment_alive()`: `"//0": "my comment"`, `"/*0": "my\ncomment"`
+- treated comments like actual data by `bake()`: `"//0": "my comment"`, `"/*0": "my\ncomment"`
 - depend on `deepdiff` to merge old and new into one with comments
 - a new `jdict` class like the logic of [benedict](https://github.com/fabiocaccamo/python-benedict) to visit nested dict by `dict[[keyA, keyAA, ...]]`
 - you need other package/lib's `load`/`loads`, which also gives your freedom to choose the load/dump engine
@@ -12,8 +13,29 @@ maybe is the only solution that keep comments(round trip) as data.
 ## Usage
 
 ```python
-
+{
+    '//0<SEED>': ' "": null, # dict内的顺序与真实的注释出现位置一致
+    '0': 0,
+    '//1<SEED>': ' 0', # 行内注释，在dict内的排序需要在真实数据的后面。
+    '//2<SEED>': ' "1": 1,/* 1 */\n', # 行上注释，则末尾应该有个\n
+    '/*,3<SEED>': ' 2 ', # 不应为`/*`，而应为`/*,`，其中prefix[0:1]=="/*"，而prefix[2]==","代表这个多行注释应该`放到一个逗号前面`的意思; 多行注释按`向下查找的栈`规则，所以需要放到真实数据 "2": 2的前面。
+    '2': 2,
+    '/*\n4<SEED>': ' 👻 ', # `/*\n`代表多行注释的末尾是一个换行符，也相当于多行版本的行上注释
+    '/*,5<SEED>': ' 3\n  4\n  * 5\n  ', # 不应为`/*`，而应为`/*,`
+    '3': 3,
+    '/*v6<SEED>': ' 6 ', # `/*v` 代表多行注释应该出现在实际的value槽位之前
+    '6//': 6,
+    '/*k7<SEED>': ' 7 ', # `/*k` 代表多行注释应该出现在实际的key槽位之前
+    '7': 7,
+    '/*\n8<SEED>': ' 8 ', # `/*\n`代表多行注释应该在**下方**kv数据的末尾，然后是换行符(这一点不要与 "//...": "...\n"行上注释末尾必须是\n 的规则混淆了)
+    '8': 8,
+    '//9<SEED>': ' "9": 9',
+    '/-node<SEED>': jsonc({'just ignore these': 'i am in node comment'}),
+    'node': jsonc({'do not ignore me': 'i am real data!'}),
+}
 ```
+
+同理，`/*:`代表多行注释应该出现在冒号前面，key槽位的后面。
 
 ## json5 loads() substitute
 
