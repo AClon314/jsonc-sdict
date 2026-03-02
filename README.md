@@ -1,16 +1,34 @@
 # jsonc_sdict 即典
 
-- jsonc, maybe is the only solution that keep comments(round trip) as data.
-- sdict = [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
+maybe is the only solution support round-trip(keep comments both for read&write) for jsonc/hjson, with easy api design.
 
-## inner principle
+bundled `sdict` = [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
 
-- treated comments like actual data by `bake()`: `"//0": "my comment"`, `"/*0": "my\ncomment"`
-- depend on `deepdiff` to merge old and new into one with comments
-- a new `jdict` class like the logic of [benedict](https://github.com/fabiocaccamo/python-benedict) to visit nested dict by `dict[[keyA, keyAA, ...]]`
-- you need other package/lib's `load`/`loads`, which also gives your freedom to choose the load/dump engine
+bundled `weakList` & `OrderedWeakList` because cpython has not implemented.
+
+> [!WARNING]
+> some code was written by AI, and I'm re-writing/cleanup code in the future.
 
 ## Usage
+
+```python
+jc = jsonc(my_dict)
+# or jsonc(json.loads(my_str), my_str)
+# jc.update(hjson.loads(jc.body)) # if my_str
+jc["//unique-keyname"] = "my comment but at end of body"
+jc.insert_comment({
+    "/*\\nunique-keyname-1": "my multi-\\nline comments\\n"
+    "//\\nunique-keyname-2": "my line-above comments"
+    "//your data key overlap with comment-keyname rule?" + DATA: ["treat as data, not comment"] # rare edge case
+    }, "existedKey"
+)
+jc.body = hjson.dumps(jc)
+f.write(jc.body)
+```
+
+### comment keyname rule
+
+TODO: english version
 
 ```python
 {
@@ -37,7 +55,7 @@
 
 同理，`/*:`代表多行注释应该出现在冒号前面，key槽位的后面。
 
-## json5 loads() substitute
+## json loads() substitute
 
 | pypi                                                                                                                                                         | commits                                                                                                                                                                                                                                           | issues                                                                                                                                                                                                                     | about                                                               | lack                                                                                                                                                                    |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
