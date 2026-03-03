@@ -513,6 +513,8 @@ class jsonc[K = str, V = Any](sdict[K, V]):
                 line_above = mode == "before_key" and (
                     not has_code_before_on_line(token.start)
                 )
+                if mode == "after_value" and not has_code_before_on_line(token.start):
+                    line_above = True
                 prefix = token.prefix + ("\n" if line_above else "")
                 value = token.value
                 append_obj_comment(obj, prefix, value)
@@ -1123,11 +1125,83 @@ class hjson[K = str, V = Any](jsonc[K, V]):
     _CommentPrefix = Literal["/*", "//", "#", "/-"]
     _single_comment: tuple[_CommentPrefix, ...] = ("//", "#")
 
-    def _find_root_start(self, n: int, code: str) -> int:
-        try:
-            return super()._find_root_start(n, code)
-        except ValueError:
-            return 0  # TODO: what value
+    def _first_significant_char(self, text: str) -> tuple[str | None, int]:
+        n = len(text)
+        i = 0
+        in_str = False
+        escaped = False
+        in_block = False
+        in_line = False
+
+        while i < n:
+            c = text[i]
+            if in_str:
+                if escaped:
+                    escaped = False
+                elif c == "\\":
+                    escaped = True
+                elif c == '"':
+                    in_str = False
+                i += 1
+                continue
+            if in_block:
+                if text.startswith("*/", i):
+                    in_block = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if in_line:
+                if c == "\n":
+                    in_line = False
+                i += 1
+                continue
+            if c.isspace():
+                i += 1
+                continue
+            if text.startswith("/*", i):
+                in_block = True
+                i += 2
+                continue
+            single_prefix = self._match_single_comment_prefix(text, i)
+            if single_prefix is not None:
+                in_line = True
+                i += len(single_prefix)
+                continue
+            return c, i
+        return None, -1
+
+    def loads(self, raw: str) -> str:
+        first, _ = self._first_significant_char(raw)
+        rootless_object = first not in ("{", "[", None) and isinstance(self.v, Mapping)
+        self._rootless_object = rootless_object
+        if not rootless_object:
+            return super().loads(raw)
+
+        wrapped = "{\n" + raw + "\n}"
+        body = super().loads(wrapped)
+        self.header = ""
+        self.footer = ""
+        self.bodyEdge = 0, len(raw)
+        return body
+
+    def dumps(self, obj: Mapping | Sequence | None = None, depth=0) -> str:
+        rendered = super().dumps(obj=obj, depth=depth)
+        if depth != 0:
+            return rendered
+        target = self.v if obj is None else (obj.v if isinstance(obj, sdict) else obj)
+        if not (
+            getattr(self, "_rootless_object", False) and isinstance(target, Mapping)
+        ):
+            return rendered
+
+        lines = rendered.splitlines()
+        if len(lines) >= 2 and lines[0] == "{" and lines[-1] == "}":
+            inner = lines[1:-1]
+            return "\n".join(
+                line[2:] if line.startswith("  ") else line for line in inner
+            )
+        return rendered
 
 
 Type_jsonc = jsonc | type[jsonc]
@@ -1139,7 +1213,7 @@ class CompactJSONEncoder(json.JSONEncoder):
     CONTAINER_TYPES = (Mapping, Sequence)
     """Container datatypes include primitives or other containers."""
 
-    MAX_WIDTH = 70
+    MAX_WIDTH = 150
     """Maximum width of a container that might be put on a single line."""
 
     MAX_ITEMS = 10

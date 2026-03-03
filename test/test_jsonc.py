@@ -5,7 +5,7 @@ from collections import OrderedDict
 import hjson
 import pytest
 
-from jsonc_sdict.jsonc import AS_DATA, jsonc, hjson as hsjon_wrap
+from jsonc_sdict.jsonc import AS_DATA, jsonc, hjson as hjson_wrap
 from jsonc_sdict.share import getLogger
 
 Log = getLogger(__name__)
@@ -21,7 +21,7 @@ def Jsonc(raw, **kwargs):
 
 
 def Hjson(raw, **kwargs):
-    return hsjon_wrap(raw, hjson.loads, dumps=_dumps, **kwargs)
+    return hjson_wrap(raw, hjson.loads, dumps=_dumps, **kwargs)
 
 
 def test_setitem_comment_key_seed_and_data_escape():
@@ -159,13 +159,18 @@ def test_body_restored_and_full():
 
 
 @pytest.mark.parametrize(
-    "old_name,new_name, initFunc",
+    "old_name,new_name,initFunc,expected_block",
     [
-        ("old.jsonc", "new-from_jsonc.jsonc", Jsonc),
-        ("old.hjson", "new-from_hjson.jsonc", Hjson),
+        (
+            "old.jsonc",
+            "new-from_jsonc.jsonc",
+            Jsonc,
+            "/*my multi-\n  line comments\n  */",
+        ),
+        ("old.hjson", "new-from_hjson.hjson", Hjson, "/*my multi-\nline comments\n*/"),
     ],
 )
-def test_readme_example(old_name: str, new_name: str, initFunc):
+def test_readme_example(old_name: str, new_name: str, initFunc, expected_block: str):
     base = Path(__file__).parent
     new_path = base / new_name
 
@@ -195,7 +200,7 @@ def test_readme_example(old_name: str, new_name: str, initFunc):
     assert "//my comment but at end of body" in out
     assert "//my line-above comments" in out
     # multi-line(block) comment
-    assert "/*my multi-\n  line comments\n  */" in out
+    assert expected_block in out
     # AS_DATA-suffixed key should remain a normal data key
     assert '"//your data key overlap with comment-keyname rule?"' in out
     # line-above comment should appear before key "2"
@@ -203,3 +208,7 @@ def test_readme_example(old_name: str, new_name: str, initFunc):
     # existing source comments should still be preserved
     assert '// "": null,' in out
     assert "/* 2 */" in out
+    if old_name == "old.hjson":
+        assert not out.lstrip().startswith("{")
+        assert '"10": "# is single line in hjson" # comment' in out
+        assert "\n// end of body" in out
