@@ -354,6 +354,8 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
             parent: weakref of parent
             getChild: used for __getitem__
         """
+        self.repr = False
+        """if you want `{}`, set to False; if you want `sdict({})` truly raw data, set to True"""
         self.use_ref = data is None
         """affect the return of self.v"""
         super().__init__(data or ())
@@ -464,8 +466,9 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
     #         return self.v == value.v
     #     return self.v == value
 
-    # def __repr__(self) -> str:
-    #     return f"{self.__class__.__name__}({self.v!r})"
+    def __repr__(self) -> str:
+        r = super().__repr__()
+        return r if self.repr else r[len(self.__class__.__name__) + 1 : -1]
 
     @copy_args(OrderedDict.__ior__)
     def __ior__(self, value):
@@ -670,8 +673,9 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         order: Literal["old", "new"] | None = "old",
     ):
         """
+        Usage: `list(self.merge(...))`
         if new is Map, will auto convert to DeepDiff in inner.
-        *inspired by https://github.com/toumorokoshi/deepmerge and https://github.com/seperman/deepdiff*
+        *inspired by [deepmerge](https://github.com/toumorokoshi/deepmerge) & [deepdiff](https://github.com/seperman/deepdiff)*
 
         Args:
             conflict: if None, will yield, and you can manually edit `parent[key] = ...`, or `gen.send(New_value) or gen.send(NONE)`

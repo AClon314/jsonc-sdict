@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from collections import OrderedDict
 
-from jsonc_sdict.jsonc import DATA, jsonc
+from jsonc_sdict.jsonc import AS_DATA, jsonc
 from jsonc_sdict.share import getLogger
 
 Log = getLogger(__name__)
@@ -15,7 +15,7 @@ def test_setitem_comment_key_seed_and_data_escape():
 
     jc["//line"] = "hello"
     jc["/*block"] = "world"
-    jc["//raw" + DATA] = 1
+    jc["//raw" + AS_DATA] = 1
 
     assert "//line-S" in jc
     assert "/*block-S" in jc
@@ -122,13 +122,14 @@ def test_read_old_jsonc_update_and_write_new_jsonc():
     # end-of-body single-line comment
     jc["//unique-keyname"] = "my comment but at end of body"
 
-    # line-above + multi-line comment + DATA escape key
-    jc.insert(
+    # line-above + multi-line comment + AS_DATA escape key
+    jc.insert_comment(
         {
             "/*\nunique-keyname-1": "my multi-\nline comments\n",
-            "//unique-keyname-2": "my line-above comments\n",
-            "//your data key overlap with comment-keyname rule?"
-            + DATA: ["treat as data, not comment"],
+            "//\nunique-keyname-2": "my line-above comments\n",
+            "//your data key overlap with comment-keyname rule?" + AS_DATA: [
+                "treat as data, not comment"
+            ],
         },
         key="2",
     )
@@ -142,7 +143,7 @@ def test_read_old_jsonc_update_and_write_new_jsonc():
     assert "//my line-above comments" in out
     # multi-line(block) comment
     assert "/*my multi-\n  line comments\n  */" in out
-    # DATA-suffixed key should remain a normal data key
+    # AS_DATA-suffixed key should remain a normal data key
     assert '"//your data key overlap with comment-keyname rule?"' in out
     # line-above comment should appear before key "2"
     assert out.find("//my line-above comments") < out.find('"2": 2')

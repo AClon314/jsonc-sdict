@@ -14,12 +14,12 @@ classifiers = [
   "Programming Language :: Python :: 3.15",
 ]
 dependencies = ["deepdiff"]
-description = "keep comment(round-trip) when read & write jsonc/json5, signal dict with recording extra context(parent/keypath)"
-keywords = ["config", "json", "jsonc", "hjson", "round-trip", "comment", "signal", "angular", "benedict", "weakList", "OrderedWeakSet"]
+description = "keep comment(round-trip) when read & write jsonc/hjson,  sdict with extra context(parent/keypath), weakList & OrderedWeakSet"
+keywords = ["config", "json", "jsonc", "hjson", "round-trip", "comment", "benedict", "weakList", "OrderedWeakSet"]
 name = "jsonc_sdict"
 readme = "README.md"
 requires-python = ">=3.13"
-version = "0.1.20260302"
+version = "0.1.20260303"
 
 [[project.authors]]
 email = "nolca@qq.com"

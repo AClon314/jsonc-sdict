@@ -1,30 +1,19 @@
 #!/bin/env python3
 """
-comment-keyname gen rules:
-```python
-{
-    '//0<SEED>': ' "": null, # dict内的顺序与真实的注释出现位置一致
-    '0': 0,
-    '//1<SEED>': ' 0', # 行内注释，在dict内的排序需要在真实数据的后面。
-    '//2<SEED>': ' "1": 1,/* 1 */\n', # 行上注释，则末尾应该有个\n
-    '/*,3<SEED>': ' 2 ', # 不应为`/*`，而应为`/*,`，其中prefix[0:1]=="/*"，而prefix[2]==","代表这个多行注释应该`放到一个逗号前面`的意思; 多行注释按`向下查找的栈`规则，所以需要放到真实数据 "2": 2的前面。
-    '2': 2,
-    '/*\n4<SEED>': ' 👻 ', # `/*\n`代表多行注释的末尾是一个换行符，也相当于多行版本的行上注释
-    '/*,5<SEED>': ' 3\n  4\n  * 5\n  ', # 不应为`/*`，而应为`/*,`
-    '3': 3,
-    '/*v6<SEED>': ' 6 ', # `/*v` 代表多行注释应该出现在实际的value槽位之前
-    '6//': 6,
-    '/*k7<SEED>': ' 7 ', # `/*k` 代表多行注释应该出现在实际的key槽位之前
-    '7': 7,
-    '/*\n8<SEED>': ' 8 ', # `/*\n`代表多行注释应该在**下方**kv数据的末尾，然后是换行符(这一点不要与 "//...": "...\n"行上注释末尾必须是\n 的规则混淆了)
-    '8': 8,
-    '//9<SEED>': ' "9": 9',
-    '/-node<SEED>': jsonc({'just ignore these': 'i am in node comment'}),
-    'node': jsonc({'do not ignore me': 'i am real data!'}),
-}
-```
+comment-keyname rules:
 
-同理，`/*:`代表多行注释应该出现在冒号前面，key槽位的后面。
+| Internal key prefix | Means | Restored shape |
+| --- | --- | --- |
+| `//` | single-line comment, inline mode | after current value/comma |
+| `//\n` | single-line comment, line-above mode | independent line before next key/value |
+| `/*` | block comment (default) | inline block comment |
+| `/*\n` | block comment with trailing newline mode | rendered with line break behavior |
+| `/*,` | block comment before comma | placed before comma of current item |
+| `/*k` | block comment before key slot | before JSON key token |
+| `/*:` | block comment before colon slot | between key and value |
+| `/*v` | block comment before value slot | after colon, before value |
+| `/-` | node comment | comments out a whole subtree (KDL-like style) |
+```
 """
 
 import json
@@ -40,7 +29,8 @@ from jsonc_sdict.sdict import sdict, set_item, get_item
 
 Log = getLogger(__name__)
 SEED = "-" + uuid4().hex
-DATA = "-" + uuid4().hex
+AS_DATA = "-" + uuid4().hex
+"""use with jsonc/hjson like `"//your data key overlap with comment-keyname rule?" + AS_DATA: ["treat as data, not comment"]`"""
 BeforeSep = Literal["", "\n", ",", "k", ":", "v"]
 """k : v , \n"""
 before_seps: tuple[BeforeSep] = get_args(BeforeSep)
@@ -70,15 +60,15 @@ class BakeComment:
 class jsonc[K = str, V = Any](sdict[K, V]):
     """
     ### Usage
-    life cycle: jc.bake() → 3rd-party lib json.loads(body) → jc.update() → user's jc.insert() → jc.full from restore()
+    life cycle: jc.bake() → 3rd-party lib json.loads(body) → jc.update() → user's jc.insert_comment() → jc.full from restore()
     ```python
     jc = jsonc(my_dict) # or jsonc(json.loads(my_str), my_str)
     # jc.update(hjson.loads(jc.body)) # if my_str
     jc["//unique-keyname"] = "my comment but at end of body"
-    jc.insert({
+    jc.insert_comment({
         "/*\\nunique-keyname-1": "my multi-\\nline comments\\n"
         "//\\nunique-keyname-2": "my line-above comments"
-        "//your data key overlap with comment-keyname rule?" + DATA: ["treat as data, not comment"] # rare edge case
+        "//your data key overlap with comment-keyname rule?" + AS_DATA: ["treat as data, not comment"] # rare edge case
         }, "existedKey"
     )
     jc.body = hjson.dumps(jc)
@@ -189,7 +179,9 @@ class jsonc[K = str, V = Any](sdict[K, V]):
     #         return f"#{val}"
     #     return f"/*{val}*/"
 
-    def restore_comment(self, comment: CommentData | str, value: Any = "", indent: str = ""):
+    def restore_comment(
+        self, comment: CommentData | str, value: Any = "", indent: str = ""
+    ):
         """used in restore phase"""
         prefix = comment.prefix if isinstance(comment, CommentData) else str(comment)
         val = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
@@ -458,9 +450,7 @@ class jsonc[K = str, V = Any](sdict[K, V]):
                         prefix = "/*v"
                     elif mode == "after_value":
                         prefix = (
-                            "/*,"
-                            if next_sig_char(token.end, close) == ","
-                            else "/*\n"
+                            "/*," if next_sig_char(token.end, close) == "," else "/*\n"
                         )
                     else:
                         prev_sig = prev_sig_char(token.start, start)
@@ -470,10 +460,14 @@ class jsonc[K = str, V = Any](sdict[K, V]):
                         at_line_tail_after_comma = (
                             prev_sig == "," and not has_code_after_on_line(token.end)
                         )
-                        prefix = "/*\n" if (line_only or at_line_tail_after_comma) else "/*k"
+                        prefix = (
+                            "/*\n" if (line_only or at_line_tail_after_comma) else "/*k"
+                        )
                     append_obj_comment(obj, prefix, token.value)
                     continue
-                line_above = mode == "before_key" and (not has_code_before_on_line(token.start))
+                line_above = mode == "before_key" and (
+                    not has_code_before_on_line(token.start)
+                )
                 prefix = token.prefix + ("\n" if line_above else "")
                 value = token.value
                 append_obj_comment(obj, prefix, value)
@@ -586,12 +580,16 @@ class jsonc[K = str, V = Any](sdict[K, V]):
 
             for item in node:
                 value_pos = skip_ws(cursor, end_close)
-                emit_array_comments(arr, pop_comments(cursor, value_pos), "before_value")
+                emit_array_comments(
+                    arr, pop_comments(cursor, value_pos), "before_value"
+                )
                 parsed_item, value_end = parse_value(item, value_pos, end_close)
                 arr.append(parsed_item)
 
                 delim_pos = skip_ws(value_end, end_close)
-                emit_array_comments(arr, pop_comments(value_end, delim_pos), "after_value")
+                emit_array_comments(
+                    arr, pop_comments(value_end, delim_pos), "after_value"
+                )
                 if delim_pos < end_close and code[delim_pos] == ",":
                     cursor = delim_pos + 1
                 else:
@@ -611,20 +609,26 @@ class jsonc[K = str, V = Any](sdict[K, V]):
             or (code[src_start] == "[" and not iterable(root_data))
         ):
             try:
-                root_data = json.loads(code[src_start:src_end], object_pairs_hook=OrderedDict)
+                root_data = json.loads(
+                    code[src_start:src_end], object_pairs_hook=OrderedDict
+                )
             except json.JSONDecodeError:
                 if code[src_start] == "{":
                     root_data = OrderedDict()
                 else:
                     root_data = []
 
-        while comment_index < len(comments) and comments[comment_index].end <= src_start:
+        while (
+            comment_index < len(comments) and comments[comment_index].end <= src_start
+        ):
             comment_index += 1
 
         root, parsed_end = parse_value(root_data, src_start, src_end)
         if parsed_end < src_end:
             if isinstance(root, list):
-                emit_array_comments(root, pop_comments(parsed_end, src_end), "before_value")
+                emit_array_comments(
+                    root, pop_comments(parsed_end, src_end), "before_value"
+                )
             elif isinstance(root, Mapping):
                 emit_obj_comments(
                     cast(OrderedDict, root),
@@ -711,7 +715,11 @@ class jsonc[K = str, V = Any](sdict[K, V]):
             after_comma_comments: list[tuple[int, str]] = []
 
             def flush_line():
-                nonlocal line_base, line_has_comma, before_comma_comments, after_comma_comments
+                nonlocal \
+                    line_base, \
+                    line_has_comma, \
+                    before_comma_comments, \
+                    after_comma_comments
                 if line_base is None:
                     return
                 line = line_base
@@ -785,7 +793,11 @@ class jsonc[K = str, V = Any](sdict[K, V]):
                 ) + key_text
                 if pending_before_colon:
                     key_side += " " + " ".join(pending_before_colon)
-                val_side = ((" " + " ".join(pending_before_value)) if pending_before_value else "") + f" {value_text}"
+                val_side = (
+                    (" " + " ".join(pending_before_value))
+                    if pending_before_value
+                    else ""
+                ) + f" {value_text}"
 
                 line_base = f"{next_ind}{key_side}:{val_side}"
                 line_has_comma = has_comma
@@ -794,7 +806,12 @@ class jsonc[K = str, V = Any](sdict[K, V]):
                 pending_before_value = []
 
             flush_line()
-            for c in pending_line_above + pending_before_key + pending_before_colon + pending_before_value:
+            for c in (
+                pending_line_above
+                + pending_before_key
+                + pending_before_colon
+                + pending_before_value
+            ):
                 lines.append(f"{next_ind}{c}")
             lines.append(f"{ind}}}")
             return "\n".join(lines)
@@ -802,7 +819,9 @@ class jsonc[K = str, V = Any](sdict[K, V]):
         elif iterable(obj):
             lines = ["["]
             items = list(obj)
-            data_total = sum(1 for item in items if self._is_list_comment_item(item) is None)
+            data_total = sum(
+                1 for item in items if self._is_list_comment_item(item) is None
+            )
             data_seen = 0
 
             pending_before_item: list[str] = []
@@ -812,7 +831,11 @@ class jsonc[K = str, V = Any](sdict[K, V]):
             after_comma_comments: list[tuple[int, str]] = []
 
             def flush_item_line():
-                nonlocal line_base, line_has_comma, before_comma_comments, after_comma_comments
+                nonlocal \
+                    line_base, \
+                    line_has_comma, \
+                    before_comma_comments, \
+                    after_comma_comments
                 if line_base is None:
                     return
                 line = line_base
@@ -905,8 +928,8 @@ class jsonc[K = str, V = Any](sdict[K, V]):
         if isinstance(key, str) and any(
             (p for p in self._comment_prefixes if key.startswith(p))
         ):
-            if key.endswith(DATA):
-                return key[: -len(DATA)]
+            if key.endswith(AS_DATA):
+                return key[: -len(AS_DATA)]
             if not key.endswith(self.SEED):
                 return key + self.SEED
         return key
@@ -922,45 +945,6 @@ class jsonc[K = str, V = Any](sdict[K, V]):
             key = self.to_inner_key(key)
         super().__setitem__(key, value)
 
-    def insert(
-        self,
-        update: Mapping[K, V],
-        key: K | UNSET = UNSET,
-        index: int | None = None,
-        after=False,
-    ):
-        if key is UNSET and index is None:
-            raise ValueError("key or index must be set")
-        if not update:
-            return
-
-        keys_before_update = list(self.keys())
-        target_index = -1
-
-        if index is not None:
-            target_index = index if index >= 0 else len(keys_before_update) + index
-            target_index = max(0, min(target_index, len(keys_before_update)))
-        elif key is not UNSET:
-            lookup_key = self.to_inner_key(key) if isinstance(key, str) else key
-            try:
-                target_index = self.index(cast(K, lookup_key))
-                if after:
-                    target_index += 1
-            except (ValueError, TypeError):
-                raise KeyError(key, "not found")
-
-        inserted_keys: set[Any] = set()
-        for k, v in update.items():
-            self[k] = v
-            actual_k = self.to_inner_key(k) if isinstance(k, str) else k
-            self.move_to_end(actual_k)
-            inserted_keys.add(actual_k)
-
-        for k in keys_before_update[target_index:]:
-            if k not in inserted_keys:
-                self.move_to_end(k)
-        self.del_cache()
-
     def insert_comment(
         self,
         comments: Mapping[K, V],
@@ -975,35 +959,77 @@ class jsonc[K = str, V = Any](sdict[K, V]):
         if not comments:
             return
 
-        normalized: list[tuple[Any, Any]] = []
-        for k, v in comments.items():
-            inner_k = self.to_inner_key(k) if isinstance(k, str) else k
-            normalized.append((inner_k, v))
+        raw_items = list(comments.items())
 
         if self.use_ref:
             arr = self.v
             if arr is None:
                 raise TypeError("list target is None")
             if not isinstance(arr, list):
-                raise TypeError(f"insert_comment() list target must be list, got {type(arr)!r}")
+                raise TypeError(
+                    f"insert_comment() list target must be list, got {type(arr)!r}"
+                )
             target_index = len(arr) if index is None else index
             if key is not UNSET and index is None:
                 if not isinstance(key, int):
-                    raise TypeError(f"list comment key must be int index, got {type(key)!r}")
+                    raise TypeError(
+                        f"list comment key must be int index, got {type(key)!r}"
+                    )
                 target_index = key + (1 if after else 0)
             target_index = max(0, min(target_index, len(arr)))
-            for offset, (k, v) in enumerate(normalized):
-                arr.insert(target_index + offset, {k: v})
+            for offset, (k, v) in enumerate(raw_items):
+                inner_k = self.to_inner_key(k) if isinstance(k, str) else k
+                arr.insert(target_index + offset, {inner_k: v})
             self.del_cache()
             return
+
+        def insert_with_comment_key(
+            update: Mapping[Any, Any],
+            key: Any | UNSET = UNSET,
+            index: int | None = None,
+            after=False,
+        ):
+            if key is UNSET and index is None:
+                raise ValueError("key or index must be set")
+            if not update:
+                return
+
+            keys_before_update = list(self.keys())
+            target_index = -1
+            if index is not None:
+                target_index = index if index >= 0 else len(keys_before_update) + index
+                target_index = max(0, min(target_index, len(keys_before_update)))
+            elif key is not UNSET:
+                lookup_key = self.to_inner_key(key) if isinstance(key, str) else key
+                try:
+                    target_index = self.index(cast(K, lookup_key))
+                    if after:
+                        target_index += 1
+                except (ValueError, TypeError):
+                    raise KeyError(key, "not found")
+
+            inserted_keys: set[Any] = set()
+            for k, v in update.items():
+                self[k] = v
+                actual_k = self.to_inner_key(k) if isinstance(k, str) else k
+                self.move_to_end(actual_k)
+                inserted_keys.add(actual_k)
+
+            for k in keys_before_update[target_index:]:
+                if k not in inserted_keys:
+                    self.move_to_end(k)
+            self.del_cache()
 
         line_above_prefixes = tuple(f"{p}\n" for p in self._single_comment)
         single_inline = tuple(self._single_comment)
         before_comments: OrderedDict[Any, Any] = OrderedDict()
         after_comments: OrderedDict[Any, Any] = OrderedDict()
-        for k, v in normalized:
-            if isinstance(k, str) and k.startswith(single_inline) and not k.startswith(
-                line_above_prefixes
+        for k, v in raw_items:
+            inner_k = self.to_inner_key(k) if isinstance(k, str) else k
+            if (
+                isinstance(inner_k, str)
+                and inner_k.startswith(single_inline)
+                and not inner_k.startswith(line_above_prefixes)
             ):
                 after_comments[k] = v
             else:
@@ -1011,22 +1037,26 @@ class jsonc[K = str, V = Any](sdict[K, V]):
 
         if index is not None:
             if before_comments:
-                self.insert(before_comments, index=index, after=False)
+                insert_with_comment_key(before_comments, index=index, after=False)
             if after_comments:
-                self.insert(after_comments, index=index + len(before_comments), after=False)
+                insert_with_comment_key(
+                    after_comments,
+                    index=index + len(before_comments),
+                    after=False,
+                )
             return
         if key is UNSET:
             tail = len(self)
             if before_comments:
-                self.insert(before_comments, index=tail, after=False)
+                insert_with_comment_key(before_comments, index=tail, after=False)
                 tail += len(before_comments)
             if after_comments:
-                self.insert(after_comments, index=tail, after=False)
+                insert_with_comment_key(after_comments, index=tail, after=False)
             return
         if before_comments:
-            self.insert(before_comments, key=key, after=False)
+            insert_with_comment_key(before_comments, key=key, after=False)
         if after_comments:
-            self.insert(after_comments, key=key, after=True)
+            insert_with_comment_key(after_comments, key=key, after=True)
 
     def comment_out(self, values: Iterable | None = None):
         """
@@ -1056,9 +1086,9 @@ class jsonc[K = str, V = Any](sdict[K, V]):
             pass
             # Log.warning(e)
 
-    def __str__(self):
-        """use __repr__ see raw key with SEED"""
-        return str(self).replace(self.SEED, "")
+    def __repr__(self) -> str:
+        r = super().__repr__()
+        return r if self.repr else r.replace(self.SEED, "")
 
 
 class hjson[K = str, V = Any](jsonc[K, V]):
@@ -1072,7 +1102,7 @@ Type_jsonc = jsonc | type[jsonc]
 class CompactJSONEncoder(json.JSONEncoder):
     """A JSON Encoder that puts small containers on single lines. by @jannismain at: https://gist.github.com/jannismain/e96666ca4f059c3e5bc28abb711b5c92"""
 
-    CONTAINER_TYPES = (list, tuple, dict)
+    CONTAINER_TYPES = (Mapping, Sequence)
     """Container datatypes include primitives or other containers."""
 
     MAX_WIDTH = 70
@@ -1090,10 +1120,10 @@ class CompactJSONEncoder(json.JSONEncoder):
 
     def encode(self, o):
         """Encode JSON object *o* with respect to single line lists."""
-        if isinstance(o, (list, tuple)):
-            return self._encode_list(o)
-        if isinstance(o, dict):
+        if isinstance(o, Mapping):
             return self._encode_object(o)
+        if iterable(o):
+            return self._encode_list(o)
         return json.dumps(
             o,
             skipkeys=self.skipkeys,
@@ -1153,10 +1183,10 @@ class CompactJSONEncoder(json.JSONEncoder):
         )
 
     def _primitives_only(self, o: list | tuple | dict):
-        if isinstance(o, (list, tuple)):
-            return not any(isinstance(el, self.CONTAINER_TYPES) for el in o)
-        elif isinstance(o, dict):
+        if isinstance(o, Mapping):
             return not any(isinstance(el, self.CONTAINER_TYPES) for el in o.values())
+        if iterable(o):
+            return not any(isinstance(el, self.CONTAINER_TYPES) for el in o)
 
     @property
     def indent_str(self) -> str:
