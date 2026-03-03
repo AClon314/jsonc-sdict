@@ -7,8 +7,6 @@ import sys
 from weakref import WeakKeyDictionary, WeakValueDictionary
 from collections.abc import Callable, Iterable, MutableSet, Sequence, Sized, Iterator
 from typing import Any, Protocol, overload
-from useful_types import SupportsDunderGT, SupportsDunderLT
-
 from jsonc_sdict.share import RAISE, check_hashWeak
 
 
@@ -376,7 +374,7 @@ class WeakList[H](Sequence[H]):
     def sort(
         self,
         *,
-        key: Callable[[H], SupportsDunderLT[H] | SupportsDunderGT[H]],
+        key: Callable[[H], Any],
         reverse: bool = False,
     ) -> None:
         sorted_items = sorted(self, key=key, reverse=reverse)

@@ -8,7 +8,6 @@ from weakref import ref
 from collections import OrderedDict
 from functools import cached_property, partial
 from typing import Any, Self, cast, Literal, overload
-from useful_types import SupportsDunderLT, SupportsDunderGT
 from collections.abc import (
     Callable,
     Iterable,
@@ -986,7 +985,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
 
     def sort(
         self,
-        key: Callable[[K], SupportsDunderLT[K] | SupportsDunderGT[K]] | None = None,
+        key: Callable[[K], Any] | None = None,
         reverse: bool = False,
     ):
         items = list(self.items())
