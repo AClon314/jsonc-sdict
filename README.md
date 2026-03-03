@@ -30,8 +30,7 @@ pip install -e ".[dev]"
 
 ```python
 import json
-from jsonc_sdict import jsonc
-from jsonc_sdict.jsonc import AS_DATA
+from jsonc_sdict import jsonc, AS_DATA
 
 raw = """
 // header
@@ -42,9 +41,8 @@ raw = """
 // footer
 """
 
-jc = jsonc()
-body = jc.bake(raw)         # strip comments into comment-keys
-jc.update(json.loads(body)) # normal JSON parser result back into jc
+jc = jsonc(hjson.loads(raw), raw)
+jc.body = json.loads(jc.body) # equal to: jc.clear() jc.update(json.loads(jc.body))
 
 jc.insert_comment(
     {
@@ -55,8 +53,7 @@ jc.insert_comment(
     key="b",
 )
 
-out = jc.full
-print(out)
+print(jc.full)
 ```
 
 ### Comment keyname rule

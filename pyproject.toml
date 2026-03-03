@@ -29,7 +29,7 @@ name = "nolca"
 file = "LICENSE"
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "hjson"]
 
 [project.urls]
 Download = "http://github.com/AClon314/jsonc-sdict/releases"

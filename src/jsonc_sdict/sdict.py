@@ -667,7 +667,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
     def merge(
         self,
         new: Mapping | DeepDiff,
-        conflict: None,
+        conflict=None,
         order: Literal["old", "new"] | None = "old",
     ) -> Generator[tuple[Any, Any, MutableMapping[Any, Any], Any], Any, Self]: ...
 
@@ -675,7 +675,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
     def merge(
         self,
         new: Mapping | DeepDiff,
-        conflict: Literal["old", "new"] = "old",
+        conflict: Literal["old", "new"],
         order: Literal["old", "new"] | None = "old",
     ) -> Self: ...
 
@@ -910,7 +910,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         getChild: GetChildFunc = get_children,
         readonly=False,
         **kwargs,
-    ):
+    ) -> Generator[Self, Any, Self | Any]:
         """
         see `dfs(**kwargs)`
         """

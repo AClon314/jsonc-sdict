@@ -117,7 +117,7 @@ class jsonc[K = str, V = Any](sdict[K, V]):
         # `sdict.__init__` may call `self.__setitem__`, so setup attrs before this call.
         super().__init__(map or {}, **kwargs)
         if identify_commentKey:
-            self.to_inner_key_batch()
+            raw = self.to_inner_key_batch(raw)
         if raw is not None:
             self.bake(raw)
 
@@ -144,14 +144,53 @@ class jsonc[K = str, V = Any](sdict[K, V]):
         parts = self.split_keyname(keyname)
         return "" if parts is None else str(parts)
 
-    def to_inner_key_batch(self):
+    def to_inner_key_batch(self, raw: str | None = None) -> str | None:
         """
         deep convert existedKey that start_with `/` (comment_prefix), by add `SEED` suffix, used at init phase before bake()
         Args:
-            data (sdict): default self
+            raw: to sync inner key change, raw is **required**
+        Returns:
+            raw: added SEED as suffix
         """
-        # TODO
-        self.rename_key_re(r"(^//.*)", r"\1" + self.SEED, deep=True)
+
+        def _replace_raw_key_token(
+            old_key: str, new_key: str, text: str | None
+        ) -> str | None:
+            if text is None or old_key == new_key:
+                return text
+            # compability for json5/hjson, if keyname is not in "quote"
+            # old_key_token = json.dumps(old_key, ensure_ascii=False)
+            # new_key_token = json.dumps(new_key, ensure_ascii=False)
+            return text.replace(old_key, new_key)
+
+        def _need_touch(key: Any) -> bool:
+            if not isinstance(key, str):
+                return False
+            if self.to_inner_key(key) != key:
+                return True
+            if raw is None or not key.endswith(self.SEED):
+                return False
+            raw_key = key[: -len(self.SEED)]
+            return any(raw_key.startswith(prefix) for prefix in self._comment_prefixes)
+
+        for parent in self.dfs(
+            yieldIf=lambda parent, _: any(_need_touch(k) for k in parent.keys())
+        ):
+            for key in tuple(parent.keys()):
+                if not isinstance(key, str):
+                    continue
+                inner_key = self.to_inner_key(key)
+                if inner_key != key:
+                    parent.rename_key(key, inner_key, deep=False)
+                    raw = _replace_raw_key_token(key, inner_key, raw)
+                    key = inner_key
+                if key.endswith(self.SEED):
+                    raw_key = key[: -len(self.SEED)]
+                    if any(
+                        raw_key.startswith(prefix) for prefix in self._comment_prefixes
+                    ):
+                        raw = _replace_raw_key_token(raw_key, key, raw)
+        return raw
 
     def _single_prefixes_sorted(self) -> tuple[str, ...]:
         return tuple(sorted(self._single_comment, key=len, reverse=True))
@@ -167,17 +206,6 @@ class jsonc[K = str, V = Any](sdict[K, V]):
         if not self.auto_indent or "\n" not in comment:
             return comment
         return comment.replace("\n", "\n" + indent)
-
-    # TODO: deprecate
-    # def restore_comment(self, prefix: str, value: Any, indent: str = "") -> str:
-    #     """used in restore phase"""
-    #     val = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    #     val = self._add_indent(val, indent)
-    #     if prefix == "//":
-    #         return f"//{val}"
-    #     if prefix.startswith("#"):
-    #         return f"#{val}"
-    #     return f"/*{val}*/"
 
     def restore_comment(
         self, comment: CommentData | str, value: Any = "", indent: str = ""
@@ -924,7 +952,11 @@ class jsonc[K = str, V = Any](sdict[K, V]):
         set_item(self if at is UNSET else at, key, value)
 
     def to_inner_key(self, key: str) -> str:
-        """translate keyname like("//manual-add") to inner keyname("//manual-add"+SEED) by gen-keyname rule"""
+        """
+        translate keyname like("//manual-add") to inner keyname("//manual-add"+SEED) by gen-keyname rule
+
+        or `"//data-key" + AS_DATA` to `"//data-key"`
+        """
         if isinstance(key, str) and any(
             (p for p in self._comment_prefixes if key.startswith(p))
         ):
