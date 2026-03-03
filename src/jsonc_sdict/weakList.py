@@ -164,8 +164,8 @@ class WeakList[H](Sequence[H]):
     @overload
     def __getitem__(self, index: int) -> H: ...
     @overload
-    def __getitem__(self, index: slice[int | None]) -> list[H]: ...
-    def __getitem__(self, index: int | slice[int | None]) -> H | list[H]:
+    def __getitem__(self, index: slice) -> list[H]: ...
+    def __getitem__(self, index: int | slice) -> H | list[H]:
         if isinstance(index, slice):
             return list(self)[index]
         # values() is O(1) in current dict, but indexing into it is O(n)
@@ -424,7 +424,7 @@ class OrderedWeakSet[H](MutableSet[H]):
     def copy(self):
         return self.__class__(self)
 
-    def __getitem__(self, index: int | slice[int | None]) -> H | list[H]:
+    def __getitem__(self, index: int | slice) -> H | list[H]:
         if isinstance(index, slice):
             return list(self.dict.keys())[index]
         return list(self.dict.keys())[index]

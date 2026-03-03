@@ -966,7 +966,7 @@ class jsonc[K = str, V = Any](sdict[K, V]):
                 return key + self.SEED
         return key
 
-    def __setitem__(self, key: K | Sequence[K] | slice[int | None] | Any, value):
+    def __setitem__(self, key: K | Sequence[K] | slice | Any, value):
         if (
             isinstance(key, Sequence)
             and not isinstance(key, (str, bytes, bytearray))

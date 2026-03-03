@@ -405,7 +405,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         """see `get_item_attr()`"""
         return get_item_attr(self.v, key, default, noRaise)
 
-    def __getitem__(self, key: K | Iterable[K] | slice[int | None] | Any):
+    def __getitem__(self, key: K | Iterable[K] | slice | Any):
         if isinstance(key, slice):
             return [
                 (
@@ -442,7 +442,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         """see `set_item_attr()`"""
         return set_item_attr(self.v if at is UNSET else at, key, value)
 
-    def __setitem__(self, key: K | Sequence[K] | slice[int | None] | Any, value):
+    def __setitem__(self, key: K | Sequence[K] | slice | Any, value):
         if isinstance(key, slice):
             raise NotImplementedError("TODO")  # TODO: batch
             for i in self.keys_flat(slice=key):
@@ -849,7 +849,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         self,
         maxDepth=float("inf"),
         digList=True,
-        slice: slice[int | None] = slice(None),
+        slice: slice = slice(None),
         getChild: GetChildFunc = get_children,
         **kwargs,
     ):
@@ -868,7 +868,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         self,
         maxDepth=float("inf"),
         digList=True,
-        slice: slice[int | None] = slice(None),
+        slice: slice = slice(None),
         getChild: GetChildFunc = get_children,
         **kwargs,
     ):
@@ -886,7 +886,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         self,
         maxDepth=float("inf"),
         digList=True,
-        slice: slice[int | None] = slice(None),
+        slice: slice = slice(None),
         getChild: GetChildFunc = get_children,
         **kwargs,
     ):
