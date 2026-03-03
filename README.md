@@ -1,11 +1,16 @@
+<center>
+<img src="./logo.svg" alt="logo" width="128" height="128" />
+
 # jsonc_sdict 即典
 
+</center>
+
 [![PyPI - Version](https://img.shields.io/pypi/v/jsonc-sdict)](https://pypi.org/project/jsonc-sdict/)
- | Doc: [简中文档](./README-zh_CN.md)
+Doc: [简中文档](./README-zh_CN.md)
 
 Round-trip comments for JSONC/HJSON, with dict-like APIs that stay simple & easy for app config editing.
 
-- Keep comments on read and write (`bake` → edit → `restore`).
+- Keep comments on read and write (`loads` → edit → `restore`).
 - Work with nested structures via `sdict` ≈ [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
 - Use weak-reference ordered containers via `weakList`/`OrderedWeakSet`.
 
@@ -30,6 +35,7 @@ pip install -e ".[dev]"
 
 ```python
 import json
+import hjson
 from jsonc_sdict import jsonc, AS_DATA
 
 raw = """
@@ -41,9 +47,10 @@ raw = """
 // footer
 """
 
-jc = jsonc(hjson.loads(raw), raw)
-jc.body = json.loads(jc.body) # equal to: jc.clear() jc.update(json.loads(jc.body))
+def loads(self, obj):
+    return hjson.loads(obj, ...) # pre-fill your custom args here
 
+jc = jsonc(raw, loads, dumps=hjson.dumps)
 jc.insert_comment(
     {
         "/*\\nnew-block": "multi\\nline\\n",
@@ -69,17 +76,17 @@ print(jc.full)
 
 Common forms:
 
-| Internal key prefix | Means | Restored shape |
-| --- | --- | --- |
-| `//` | single-line comment, inline mode | after current value/comma |
-| `//\n` | single-line comment, line-above mode | independent line before next key/value |
-| `/*` | block comment (default) | inline block comment |
-| `/*\n` | block comment with trailing newline mode | rendered with line break behavior |
-| `/*,` | block comment before comma | placed before comma of current item |
-| `/*k` | block comment before key slot | before JSON key token |
-| `/*:` | block comment before colon slot | between key and value |
-| `/*v` | block comment before value slot | after colon, before value |
-| `/-` | node comment | comments out a whole subtree (KDL-like style) |
+| Internal key prefix | Means                                    | Restored shape                                |
+| ------------------- | ---------------------------------------- | --------------------------------------------- |
+| `//`                | single-line comment, inline mode         | after current value/comma                     |
+| `//\n`              | single-line comment, line-above mode     | independent line before next key/value        |
+| `/*`                | block comment (default)                  | inline block comment                          |
+| `/*\n`              | block comment with trailing newline mode | rendered with line break behavior             |
+| `/*,`               | block comment before comma               | placed before comma of current item           |
+| `/*k`               | block comment before key slot            | before JSON key token                         |
+| `/*:`               | block comment before colon slot          | between key and value                         |
+| `/*v`               | block comment before value slot          | after colon, before value                     |
+| `/-`                | node comment                             | comments out a whole subtree (KDL-like style) |
 
 Example mapping shape:
 

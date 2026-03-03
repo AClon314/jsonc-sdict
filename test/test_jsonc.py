@@ -11,9 +11,17 @@ Log = getLogger(__name__)
 Log.setLevel("DEBUG")
 
 
+def _dumps(obj):
+    return json.dumps(obj, ensure_ascii=False)
+
+
+def _new_jsonc(raw, **kwargs):
+    return jsonc(raw, hjson.loads, dumps=_dumps, **kwargs)
+
+
 def test_setitem_comment_key_seed_and_data_escape():
     seed = "-S"
-    jc = jsonc(seed=seed)
+    jc = _new_jsonc({}, seed=seed)
 
     jc["//line"] = "hello"
     jc["/*block"] = "world"
@@ -22,12 +30,14 @@ def test_setitem_comment_key_seed_and_data_escape():
     assert "//line-S" in jc
     assert "/*block-S" in jc
     assert "//raw" in jc
-    assert jc.is_comment("//line-S") == "//line"
-    assert jc.is_comment("//raw") == ""
+    line_comment = jc.split_keyname("//line-S")
+    assert line_comment is not None
+    assert str(line_comment) == "//line"
+    assert jc.split_keyname("//raw") is None
 
 
 def test_to_inner_key_batch_converts_deep_prefixes_and_as_data():
-    jc = jsonc(
+    jc = _new_jsonc(
         {
             "root": {
                 "//line": 1,
@@ -36,14 +46,14 @@ def test_to_inner_key_batch_converts_deep_prefixes_and_as_data():
                 "//real" + AS_DATA: 4,
             }
         },
-        identify_commentKey=False,
+        init_commentKey=False,
     )
     seed = jc.SEED
 
     root = OrderedDict.__getitem__(jc, "root")
     assert list(root.keys()) == ["//line", "/*blk", "/-node", "//real" + AS_DATA]
 
-    jc.to_inner_key_batch()
+    jc.to_inner_key_batch(jc.dumps())
     root = OrderedDict.__getitem__(jc, "root")
     assert list(root.keys()) == [
         f"//line{seed}",
@@ -52,14 +62,13 @@ def test_to_inner_key_batch_converts_deep_prefixes_and_as_data():
         "//real",
     ]
 
-    # default init path should not produce duplicated SEED suffix
-    jc2 = jsonc({"root": {"//line": 1}})
+    # default init path (flat key) should not produce duplicated SEED suffix
+    jc2 = _new_jsonc({"//line": 1})
     seed2 = jc2.SEED
-    root2 = OrderedDict.__getitem__(jc2, "root")
-    assert list(root2.keys()) == [f"//line{seed2}"]
+    assert list(jc2.keys()) == [f"//line{seed2}"]
 
 
-def test_bake_parses_comments_into_data_and_keeps_edges():
+def test_loads_parses_comments_into_data_and_keeps_edges():
     text = (
         "// head\n"
         "{\n"
@@ -71,9 +80,10 @@ def test_bake_parses_comments_into_data_and_keeps_edges():
         "// tail\n"
     )
 
-    jc = jsonc()
-    body = jc.bake(text)
+    jc = _new_jsonc({})
+    body = jc.loads(text)
     parsed = json.loads(body)
+    jc.clear()
     jc.update(parsed)
 
     assert jc.header == "// head\n"
@@ -100,7 +110,8 @@ def test_bake_parses_comments_into_data_and_keeps_edges():
 
 
 def test_body_cache_refresh_on_mutation_and_body_setter():
-    jc = jsonc({"a": 1})
+    jc = _new_jsonc({"a": 1})
+    jc.del_cache()
 
     body_before = jc.body
     assert '"a": 1' in body_before
@@ -110,13 +121,14 @@ def test_body_cache_refresh_on_mutation_and_body_setter():
     assert body_before != body_after
     assert '"b": 2' in body_after
 
-    jc.body = {"x": 9}
+    jc.clear()
+    jc.update({"x": 9})
     assert list(jc.keys()) == ["x"]
-    assert jc["x"] == 9
+    assert '"x": 9' in jc.body
 
 
 def test_body_restored_and_full():
-    jc = jsonc()
+    jc = _new_jsonc({})
     seed = jc.SEED
     jc.update(
         {
@@ -129,7 +141,7 @@ def test_body_restored_and_full():
     jc.header = "// H\n"
     jc.footer = "\n// F"
 
-    restored = jc.body_restored
+    restored = jc.body
 
     assert "//line" in restored
     assert '"/-node": {' in restored
@@ -137,9 +149,8 @@ def test_body_restored_and_full():
     assert '"a": 1' in restored
     assert jc.full == jc.header + restored + jc.footer
 
-    # restored text should still keep data-keys in body output
-    parsed_body = json.loads(jc.body)
-    assert f"//c{seed}" in parsed_body
+    # internal data-keys are still preserved in mapping
+    assert f"//c{seed}" in jc
 
 
 def test_readme_example():
@@ -148,11 +159,12 @@ def test_readme_example():
     new_path = base / "new.jsonc"
 
     text = old_path.read_text(encoding="utf-8")
-    jc = jsonc()
-    parsed = json.loads(jc.bake(text))
-    Log.debug(f"{jc=}")
-    jc.body = parsed
-    Log.debug(f"{jc=}")
+    jc = _new_jsonc({})
+    parsed = json.loads(jc.loads(text))
+    Log.debug(f"keys before reset: {list(jc.keys())}")
+    jc.clear()
+    jc.update(parsed)
+    Log.debug(f"keys after reset: {list(jc.keys())}")
 
     # end-of-body single-line comment
     jc["//unique-keyname"] = "my comment but at end of body"
@@ -162,13 +174,12 @@ def test_readme_example():
         {
             "/*\nunique-keyname-1": "my multi-\nline comments\n",
             "//\nunique-keyname-2": "my line-above comments\n",
-            "//your data key overlap with comment-keyname rule?" + AS_DATA: [
-                "treat as data, not comment"
-            ],
+            "//your data key overlap with comment-keyname rule?"
+            + AS_DATA: ["treat as data, not comment"],
         },
         key="2",
     )
-    Log.debug(f"{jc=}")
+    Log.debug(f"keys after insert: {list(jc.keys())}")
 
     out = jc.full
     new_path.write_text(out, encoding="utf-8")
@@ -190,11 +201,12 @@ def test_readme_example_2():
     new_path = base / "new.jsonc"
 
     text = old_path.read_text(encoding="utf-8")
-    jc = jsonc(hjson.loads(text), text)
-    parsed = json.loads(jc.body)
-    Log.debug(f"{jc=}")
-    jc.body = parsed
-    Log.debug(f"{jc=}")
+    jc = _new_jsonc(text)
+    parsed = json.loads(jc.dumps())
+    Log.debug(f"keys before reset: {list(jc.keys())}")
+    jc.clear()
+    jc.update(parsed)
+    Log.debug(f"keys after reset: {list(jc.keys())}")
 
     # end-of-body single-line comment
     jc["//unique-keyname"] = "my comment but at end of body"
@@ -204,13 +216,12 @@ def test_readme_example_2():
         {
             "/*\nunique-keyname-1": "my multi-\nline comments\n",
             "//\nunique-keyname-2": "my line-above comments\n",
-            "//your data key overlap with comment-keyname rule?" + AS_DATA: [
-                "treat as data, not comment"
-            ],
+            "//your data key overlap with comment-keyname rule?"
+            + AS_DATA: ["treat as data, not comment"],
         },
         key="2",
     )
-    Log.debug(f"{jc=}")
+    Log.debug(f"keys after insert: {list(jc.keys())}")
 
     out = jc.full
     new_path.write_text(out, encoding="utf-8")

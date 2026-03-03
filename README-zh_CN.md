@@ -1,11 +1,16 @@
+<center>
+<img src="./logo.svg" alt="logo" width="128" height="128" />
+
 # jsonc_sdict 即典
 
+</center>
+
 [![PyPI - Version](https://img.shields.io/pypi/v/jsonc-sdict)](https://pypi.org/project/jsonc-sdict/)
- | Doc: [English](./README.md)
+Doc: [English](./README.md)
 
 支持 JSONC/HJSON 的注释保留工具，提供实用、直接的字典式 API，适合配置文件编辑场景。
 
-- 读写都保留注释（`bake` → 修改 → `restore`）。
+- 读写都保留注释（`loads` → 修改 → `restore`）。
 - 通过 `sdict` 处理嵌套结构更方便，等价于 [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
 - 提供弱引用有序容器 `weakList` / `OrderedWeakSet`。
 
@@ -30,7 +35,7 @@ pip install -e ".[dev]"
 
 ```python
 import json
-from jsonc_sdict import jsonc, 
+from jsonc_sdict import jsonc,
 
 raw = """
 // header
@@ -41,9 +46,10 @@ raw = """
 // footer
 """
 
-jc = jsonc(hjson.loads(raw), raw)
-jc.body = json.loads(jc.body) # 等价于: jc.clear() jc.update(json.loads(jc.body))
+def loads(self, obj):
+    return hjson.loads(obj, ...) # pre-fill your custom args here
 
+jc = jsonc(raw, loads, dumps=hjson.dumps)
 jc.insert_comment(
     {
         "/*\\nnew-block": "multi\\nline\\n",
@@ -69,17 +75,17 @@ print(jc.full)
 
 常见前缀语义：
 
-| 内部键前缀 | 含义 | 还原后位置 |
-| --- | --- | --- |
-| `//` | 单行注释，行内模式 | 放在当前值/逗号附近 |
-| `//\n` | 单行注释，行上模式 | 放在下一个 key/value 前独立成行 |
-| `/*` | 多行注释（默认） | 行内块注释 |
-| `/*\n` | 多行注释 + 换行模式 | 按换行语义还原 |
-| `/*,` | 逗号前多行注释 | 放在当前项逗号前 |
-| `/*k` | key 槽位前多行注释 | 放在 JSON key 前 |
-| `/*:` | 冒号槽位前多行注释 | 放在 key 和 value 之间 |
-| `/*v` | value 槽位前多行注释 | 放在冒号后、value 前 |
-| `/-` | 节点注释 | 注释整棵子树（类似 KDL 风格） |
+| 内部键前缀 | 含义                 | 还原后位置                      |
+| ---------- | -------------------- | ------------------------------- |
+| `//`       | 单行注释，行内模式   | 放在当前值/逗号附近             |
+| `//\n`     | 单行注释，行上模式   | 放在下一个 key/value 前独立成行 |
+| `/*`       | 多行注释（默认）     | 行内块注释                      |
+| `/*\n`     | 多行注释 + 换行模式  | 按换行语义还原                  |
+| `/*,`      | 逗号前多行注释       | 放在当前项逗号前                |
+| `/*k`      | key 槽位前多行注释   | 放在 JSON key 前                |
+| `/*:`      | 冒号槽位前多行注释   | 放在 key 和 value 之间          |
+| `/*v`      | value 槽位前多行注释 | 放在冒号后、value 前            |
+| `/-`       | 节点注释             | 注释整棵子树（类似 KDL 风格）   |
 
 内部结构示例：
 
