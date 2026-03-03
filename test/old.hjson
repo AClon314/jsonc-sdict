@@ -1,0 +1,27 @@
+/** aclon314 {} */ // umiki {} / * molia *    /
+// head /* head {} */ // head
+/* https://github.com/rliebz/dotfiles/blob/eddb966224d7b5b8eeb72c53cc458e11b6094a5f/markdownlint.jsonc#L3 */
+// "": null,
+"0": 0, // 0
+// "1": 1, /* 1 */
+"2": 2 /* 2 */,
+/* 👻 */
+"3": 3 /* 3
+4
+* 5
+*/,
+"6//": /* 6 */ 6,
+/* 7 */ "7": 7,
+"8": 8, /* 8 */
+// "9": 9
+"/-node": {
+// line-above comment
+"just ignore these": "i am in node comment"
+},
+// before node
+"node": {
+"do not ignore me": "i am real data!"
+}
+"10": "# is single line in hjson" # comment
+// end of body
+// eof

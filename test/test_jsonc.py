@@ -3,25 +3,30 @@ from pathlib import Path
 from collections import OrderedDict
 
 import hjson
+import pytest
 
-from jsonc_sdict.jsonc import AS_DATA, jsonc
+from jsonc_sdict.jsonc import AS_DATA, jsonc, hjson as hsjon_wrap
 from jsonc_sdict.share import getLogger
 
 Log = getLogger(__name__)
 Log.setLevel("DEBUG")
 
 
-def _dumps(obj):
-    return json.dumps(obj, ensure_ascii=False)
+def _dumps(obj, **kwargs):
+    return json.dumps(obj, ensure_ascii=False, indent=2)
 
 
-def _new_jsonc(raw, **kwargs):
+def Jsonc(raw, **kwargs):
     return jsonc(raw, hjson.loads, dumps=_dumps, **kwargs)
+
+
+def Hjson(raw, **kwargs):
+    return hsjon_wrap(raw, hjson.loads, dumps=_dumps, **kwargs)
 
 
 def test_setitem_comment_key_seed_and_data_escape():
     seed = "-S"
-    jc = _new_jsonc({}, seed=seed)
+    jc = Jsonc({}, seed=seed)
 
     jc["//line"] = "hello"
     jc["/*block"] = "world"
@@ -37,7 +42,7 @@ def test_setitem_comment_key_seed_and_data_escape():
 
 
 def test_to_inner_key_batch_converts_deep_prefixes_and_as_data():
-    jc = _new_jsonc(
+    jc = Jsonc(
         {
             "root": {
                 "//line": 1,
@@ -63,7 +68,7 @@ def test_to_inner_key_batch_converts_deep_prefixes_and_as_data():
     ]
 
     # default init path (flat key) should not produce duplicated SEED suffix
-    jc2 = _new_jsonc({"//line": 1})
+    jc2 = Jsonc({"//line": 1})
     seed2 = jc2.SEED
     assert list(jc2.keys()) == [f"//line{seed2}"]
 
@@ -80,7 +85,7 @@ def test_loads_parses_comments_into_data_and_keeps_edges():
         "// tail\n"
     )
 
-    jc = _new_jsonc({})
+    jc = Jsonc({})
     body = jc.loads(text)
     parsed = json.loads(body)
     jc.clear()
@@ -110,7 +115,7 @@ def test_loads_parses_comments_into_data_and_keeps_edges():
 
 
 def test_body_cache_refresh_on_mutation_and_body_setter():
-    jc = _new_jsonc({"a": 1})
+    jc = Jsonc({"a": 1})
     jc.del_cache()
 
     body_before = jc.body
@@ -128,7 +133,7 @@ def test_body_cache_refresh_on_mutation_and_body_setter():
 
 
 def test_body_restored_and_full():
-    jc = _new_jsonc({})
+    jc = Jsonc({})
     seed = jc.SEED
     jc.update(
         {
@@ -153,18 +158,20 @@ def test_body_restored_and_full():
     assert f"//c{seed}" in jc
 
 
-def test_readme_example():
+@pytest.mark.parametrize(
+    "old_name,new_name, initFunc",
+    [
+        ("old.jsonc", "new-from_jsonc.jsonc", Jsonc),
+        ("old.hjson", "new-from_hjson.jsonc", Hjson),
+    ],
+)
+def test_readme_example(old_name: str, new_name: str, initFunc):
     base = Path(__file__).parent
-    old_path = base / "old.jsonc"
-    new_path = base / "new.jsonc"
+    new_path = base / new_name
 
-    text = old_path.read_text(encoding="utf-8")
-    jc = _new_jsonc({})
-    parsed = json.loads(jc.loads(text))
-    Log.debug(f"keys before reset: {list(jc.keys())}")
-    jc.clear()
-    jc.update(parsed)
-    Log.debug(f"keys after reset: {list(jc.keys())}")
+    text = (base / old_name).read_text(encoding="utf-8")
+    jc: jsonc = initFunc(text)
+    Log.debug(f"{list(jc.keys())=}")
 
     # end-of-body single-line comment
     jc["//unique-keyname"] = "my comment but at end of body"
@@ -193,45 +200,6 @@ def test_readme_example():
     assert '"//your data key overlap with comment-keyname rule?"' in out
     # line-above comment should appear before key "2"
     assert out.find("//my line-above comments") < out.find('"2": 2')
-
-
-def test_readme_example_2():
-    base = Path(__file__).parent
-    old_path = base / "old.jsonc"
-    new_path = base / "new.jsonc"
-
-    text = old_path.read_text(encoding="utf-8")
-    jc = _new_jsonc(text)
-    parsed = json.loads(jc.dumps())
-    Log.debug(f"keys before reset: {list(jc.keys())}")
-    jc.clear()
-    jc.update(parsed)
-    Log.debug(f"keys after reset: {list(jc.keys())}")
-
-    # end-of-body single-line comment
-    jc["//unique-keyname"] = "my comment but at end of body"
-
-    # line-above + multi-line comment + AS_DATA escape key
-    jc.insert_comment(
-        {
-            "/*\nunique-keyname-1": "my multi-\nline comments\n",
-            "//\nunique-keyname-2": "my line-above comments\n",
-            "//your data key overlap with comment-keyname rule?"
-            + AS_DATA: ["treat as data, not comment"],
-        },
-        key="2",
-    )
-    Log.debug(f"keys after insert: {list(jc.keys())}")
-
-    out = jc.full
-    new_path.write_text(out, encoding="utf-8")
-
-    # single-line comments
-    assert "//my comment but at end of body" in out
-    assert "//my line-above comments" in out
-    # multi-line(block) comment
-    assert "/*my multi-\n  line comments\n  */" in out
-    # AS_DATA-suffixed key should remain a normal data key
-    assert '"//your data key overlap with comment-keyname rule?"' in out
-    # line-above comment should appear before key "2"
-    assert out.find("//my line-above comments") < out.find('"2": 2')
+    # existing source comments should still be preserved
+    assert '// "": null,' in out
+    assert "/* 2 */" in out

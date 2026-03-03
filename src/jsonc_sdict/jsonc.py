@@ -251,6 +251,30 @@ class jsonc[K = str, V = Any](sdict[K, V]):
             return None
         return parts, val
 
+    def _find_root_start(self, n: int, code: str) -> int:
+        i = 0
+        in_str = False
+        escaped = False
+        while i < n:
+            c = code[i]
+            if in_str:
+                if escaped:
+                    escaped = False
+                elif c == "\\":
+                    escaped = True
+                elif c == '"':
+                    in_str = False
+                i += 1
+                continue
+            if c == '"':
+                in_str = True
+                i += 1
+                continue
+            if c in "{[":
+                return i
+            i += 1
+        raise ValueError("bodyEdge NOT found, json must have {} or [] as root")
+
     def loads(self, raw: str) -> str:
         """bake `raw` with `map` hint"""
         raw = raw.replace("\r", "")
@@ -360,30 +384,6 @@ class jsonc[K = str, V = Any](sdict[K, V]):
             while pos < limit and code[pos].isspace():
                 pos += 1
             return pos
-
-        def find_root_start() -> int:
-            i = 0
-            in_str = False
-            escaped = False
-            while i < n:
-                c = code[i]
-                if in_str:
-                    if escaped:
-                        escaped = False
-                    elif c == "\\":
-                        escaped = True
-                    elif c == '"':
-                        in_str = False
-                    i += 1
-                    continue
-                if c == '"':
-                    in_str = True
-                    i += 1
-                    continue
-                if c in "{[":
-                    return i
-                i += 1
-            raise ValueError("bodyEdge NOT found, json must have {} or [] as root")
 
         def find_container_end(start: int) -> int:
             open_ch = code[start]
@@ -644,7 +644,7 @@ class jsonc[K = str, V = Any](sdict[K, V]):
             return arr, end
 
         code, comments = scan_comments(raw)
-        src_start = find_root_start()
+        src_start = self._find_root_start(n, code)
         src_end = find_container_end(src_start)
 
         root_data = to_plain(self.v)
@@ -687,7 +687,9 @@ class jsonc[K = str, V = Any](sdict[K, V]):
         self.bodyEdge = src_start, src_end
         self.header = raw[:src_start]
         self.footer = raw[src_end:]
-        self.body = self.loads_raw(body)
+        self.clear()
+        self.update(root)
+        self.rebuild()
         return body
 
     @cached_property
@@ -1120,6 +1122,12 @@ class jsonc[K = str, V = Any](sdict[K, V]):
 class hjson[K = str, V = Any](jsonc[K, V]):
     _CommentPrefix = Literal["/*", "//", "#", "/-"]
     _single_comment: tuple[_CommentPrefix, ...] = ("//", "#")
+
+    def _find_root_start(self, n: int, code: str) -> int:
+        try:
+            return super()._find_root_start(n, code)
+        except ValueError:
+            return 0  # TODO: what value
 
 
 Type_jsonc = jsonc | type[jsonc]
