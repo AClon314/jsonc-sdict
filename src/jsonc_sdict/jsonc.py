@@ -151,7 +151,7 @@ class jsonc[K = str, V = Any](sdict[K, V]):
             data (sdict): default self
         """
         # TODO
-        list(self.rename_key_re(r"(^//.*)", r"\1" + self.SEED, deep=True))
+        self.rename_key_re(r"(^//.*)", r"\1" + self.SEED, deep=True)
 
     def _single_prefixes_sorted(self) -> tuple[str, ...]:
         return tuple(sorted(self._single_comment, key=len, reverse=True))

@@ -7,7 +7,7 @@ import itertools
 from weakref import ref
 from collections import OrderedDict
 from functools import cached_property, partial
-from typing import Any, cast, Literal
+from typing import Any, Self, cast, Literal, overload
 from useful_types import SupportsDunderLT, SupportsDunderGT
 from collections.abc import (
     Callable,
@@ -468,7 +468,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
 
     def __repr__(self) -> str:
         r = super().__repr__()
-        return r if self.repr else r[len(self.__class__.__name__) + 1 : -1]
+        return r if self.repr else r[len(self.__class__.__name__) + 1 : -1] or "{}"
 
     @copy_args(OrderedDict.__ior__)
     def __ior__(self, value):
@@ -507,42 +507,20 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
 
     # TODO: move_to_end, 暂时不做
 
-    def _yield_runner(self, targets: Iterable, apply_one: Callable[[Any], bool]):
-        def _runner():
-            changed = False
-            for target in targets:
-                apply = yield target
-                if apply is not False:
-                    changed = apply_one(target) or changed
-            if changed:
-                self.del_cache()
-            return self
-
-        return _runner()
-
     def rename_key(
-        self, old: K | UNSET = UNSET, new: K | UNSET = UNSET, order=True, deep=False
-    ):
+        self,
+        old: K | UNSET = UNSET,
+        new: K | UNSET = UNSET,
+        order: bool = True,
+        deep: bool = False,
+        can_rename: Callable[[MutableMapping[Any, Any]], bool] | None = None,
+    ) -> Self:
         """
         Args:
             new: if `old` is `UNSET`, and `new` is set, will change `self`'s keyname at `self.parent[-1]`
-
-        ```python
-        list(self.rename(old_key, new_key))
-        # or
-        for parent in self.rename(old_key, new_key):
-            if cancel_rename:
-                parent.send(False)
-        ```
-        Args:
             order: if you don't care about the order, set to `False`, it will be faster
             deep: if True, will deep rename. if False and old_key not in self, will **raise KeyError**
-
-        Yields:
-            parent (sdict): parent
-
-        Send:
-            apply (bool): if False, will cancel rename. default is True
+            can_rename: callback guard. return False to skip this parent
         """
 
         if new is UNSET:
@@ -584,6 +562,12 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
             parent.update(ordered_items)
             return True
 
+        def _can_rename(parent: MutableMapping[Any, Any]):
+            if can_rename is None:
+                return True
+            return can_rename(parent)
+
+        changed = False
         if old is UNSET:
             if not self.parent or not self.keypath:
                 raise KeyError(new, "not found")
@@ -591,34 +575,43 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
             old = self.keypath[-1][-1]
             if not isinstance(parent, MutableMapping):
                 raise TypeError(f"parent must be MutableMapping, got {type(parent)!r}")
-            if not _rename_one(parent, old, new):
+            if old not in parent:
                 raise KeyError(old, "not found")
-            self.del_cache()
+            if _can_rename(parent):
+                changed = _rename_one(parent, old, new)
+            if changed:
+                self.del_cache()
             return self
 
         if not deep:
             if old not in self:
                 raise KeyError(old, "not found")
-            _rename_one(self, old, new)
-            self.del_cache()
+            if _can_rename(self):
+                changed = _rename_one(self, old, new)
+            if changed:
+                self.del_cache()
             return self
 
-        targets = list(self.dfs(yieldIf=lambda parent, _: old in parent))
-        return self._yield_runner(
-            targets,
-            lambda parent: _rename_one(parent, old, new),
-        )
+        for parent in self.dfs(yieldIf=lambda parent, _: old in parent):
+            if not _can_rename(parent):
+                continue
+            changed = _rename_one(parent, old, new) or changed
+        if changed:
+            self.del_cache()
+        return self
 
     def rename_key_re(
         self,
         old: str | re.Pattern,
         new: str | re.Pattern,
-        order=True,
-        deep=False,
-    ):
+        order: bool = True,
+        deep: bool = False,
+        can_rename: Callable[[MutableMapping[Any, Any]], bool] | None = None,
+    ) -> Self:
         """
         regex version of `rename_key()`
-        usage: `list(self.rename(r"(^//.*)", rf"\1{my_suffix}"))`
+        Args:
+            can_rename: callback guard. return False to skip this parent
         """
         old_re = re.compile(old) if isinstance(old, str) else old
         if isinstance(new, str):
@@ -633,49 +626,72 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
             new_re = new
             repl = new_re.pattern
 
-        def _rename_parent(parent: "sdict") -> bool:
-            changed = False
+        def _rename_plan(parent: MutableMapping[Any, Any]) -> list[tuple[str, str]]:
             plan: list[tuple[str, str]] = []
-            for key in list(parent.keys()):
+            for key in parent.keys():
                 if not isinstance(key, str) or old_re.search(key) is None:
                     continue
                 new_name = old_re.sub(repl, key)
                 if new_name == key:
                     continue
                 plan.append((key, new_name))
+            return plan
 
+        def _rename_parent(parent: MutableMapping[Any, Any]) -> bool:
+            if can_rename is not None and not can_rename(parent):
+                return False
+            plan = _rename_plan(parent)
+            changed = False
             for old_name, new_name in plan:
                 if old_name in parent:
                     parent.rename_key(old_name, new_name, order=order, deep=False)
                     changed = True
             return changed
 
+        changed = False
         if not deep:
-            if not _rename_parent(self):
+            if not _rename_plan(self):
                 raise KeyError(old, "not found")
-            self.del_cache()
+            changed = _rename_parent(self)
+            if changed:
+                self.del_cache()
             return self
 
-        targets = list(
-            self.dfs(
-                yieldIf=lambda parent, _: any(
-                    isinstance(key, str) and old_re.search(key) is not None
-                    for key in parent.keys()
-                )
-            )
-        )
-        return self._yield_runner(targets, _rename_parent)
+        for parent in self.dfs(yieldIf=lambda parent, _: bool(_rename_plan(parent))):
+            changed = _rename_parent(parent) or changed
+        if changed:
+            self.del_cache()
+        return self
+
+    @overload
+    def merge(
+        self,
+        new: Mapping | DeepDiff,
+        conflict: None,
+        order: Literal["old", "new"] | None = "old",
+    ) -> Generator[tuple[Any, Any, MutableMapping[Any, Any], Any], Any, Self]: ...
+
+    @overload
+    def merge(
+        self,
+        new: Mapping | DeepDiff,
+        conflict: Literal["old", "new"] = "old",
+        order: Literal["old", "new"] | None = "old",
+    ) -> Self: ...
 
     def merge(
         self,
         new: Mapping | DeepDiff,
         conflict: Literal["old", "new"] | None = None,
         order: Literal["old", "new"] | None = "old",
-    ):
+    ) -> Self | Generator[tuple[Any, Any, MutableMapping[Any, Any], Any], Any, Self]:
         """
-        Usage: `list(self.merge(...))`
         if new is Map, will auto convert to DeepDiff in inner.
         *inspired by [deepmerge](https://github.com/toumorokoshi/deepmerge) & [deepdiff](https://github.com/seperman/deepdiff)*
+        ```python
+        for old_v, new_v, parent, key in (gen := jc.merge(new)):
+            gen.send(NEW_V)
+        ```
 
         Args:
             conflict: if None, will yield, and you can manually edit `parent[key] = ...`, or `gen.send(New_value) or gen.send(NONE)`
@@ -685,13 +701,13 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
                 set to "new" (force program order) \n
                 if set None, will skip re-order, maybe faster.
 
-        Yields:
+        ## Yields
             old_v: old value
             new_v: new value
             parent (sdict): old&new_v's parent
             key: conflict happens when diff value with same key
 
-        Send:
+        ## Send
             NEW_V: if you don't want to use new_v, you send your wanted value here
         """
         if isinstance(new, DeepDiff):
@@ -700,7 +716,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
                 raise TypeError(f"`New.t2` must be Mapping, got {type(new_data)!r}")
             diff = new
         elif isinstance(new, Mapping):
-            new_data = new
+            new_data = self.__class__(new)
             diff = DeepDiff(
                 self,
                 new_data,
@@ -736,28 +752,23 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
                 return change.keys()
             return change
 
-        def _at(obj, key):
-            try:
-                return obj[key]
-            except (KeyError, IndexError, TypeError):
-                return UNSET
-
         def _collapse_path(path: str) -> tuple[Any, ...]:
             steps = tuple(parse_path(path))
-            old_obj = self
-            new_obj = new_data
             merged: list[Any] = []
             for step in steps:
                 merged.append(step)
-                old_next = _at(old_obj, step)
-                new_next = _at(new_obj, step)
+                old_next = self.getitem(merged, default=UNSET)
+                new_next = get_item(
+                    new_data,
+                    merged,
+                    default=UNSET,
+                    noRaise=(KeyError, IndexError, TypeError),
+                )
                 if not (
                     isinstance(old_next, MutableMapping)
                     and isinstance(new_next, Mapping)
                 ):
                     break
-                old_obj = old_next
-                new_obj = new_next
             return tuple(merged)
 
         add_paths = {

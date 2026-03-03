@@ -116,7 +116,7 @@ def test_read_old_jsonc_update_and_write_new_jsonc():
     jc = jsonc()
     parsed = json.loads(jc.bake(text))
     Log.debug(f"{jc=}")
-    jc.update(parsed)
+    jc.body = parsed
     Log.debug(f"{jc=}")
 
     # end-of-body single-line comment

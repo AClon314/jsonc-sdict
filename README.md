@@ -1,6 +1,7 @@
 # jsonc_sdict 即典
 
-Doc: [简中文档](./README-zh_CN.md)
+[![PyPI - Version](https://img.shields.io/pypi/v/jsonc-sdict)](https://pypi.org/project/jsonc-sdict/)
+ | Doc: [简中文档](./README-zh_CN.md)
 
 Round-trip comments for JSONC/HJSON, with dict-like APIs that stay simple & easy for app config editing.
 
@@ -16,7 +17,7 @@ Round-trip comments for JSONC/HJSON, with dict-like APIs that stay simple & easy
 ### Install
 
 ```bash
-pip install jsonc_sdict
+pip install jsonc-sdict
 ```
 
 For local development:

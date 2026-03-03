@@ -183,18 +183,29 @@ def test_rename_shallow_order_false():
     assert d["x"] == 2
 
 
-def test_rename_deep_with_cancel():
-    d = sdict({"old": 0, "child": {"old": 1, "keep": 2}, "tail": {"old": 3}})
-    g = d.rename_key("old", "new", deep=True)
+def test_rename_shallow_can_rename_false_skips_without_error():
+    d = sdict({"a": 1, "b": 2, "c": 3})
+    ret = d.rename_key("b", "x", deep=False, can_rename=lambda _: False)
+    assert ret is d
+    assert list(d.keys()) == ["a", "b", "c"]
+    assert d["b"] == 2
+    assert "x" not in d
 
-    parent = next(g)
-    assert parent is d
-    parent = g.send(None)
-    assert parent is d["child"]
-    parent = g.send(False)
-    assert parent is d["tail"]
-    with pytest.raises(StopIteration):
-        g.send(None)
+
+def test_rename_deep_with_can_rename():
+    d = sdict({"old": 0, "child": {"old": 1, "keep": 2}, "tail": {"old": 3}})
+    visited = []
+
+    def can_rename(parent):
+        visited.append(parent)
+        return parent is not d["child"]
+
+    d.rename_key(
+        "old",
+        "new",
+        deep=True,
+        can_rename=can_rename,
+    )
 
     assert "old" not in d
     assert d["new"] == 0
@@ -202,6 +213,7 @@ def test_rename_deep_with_cancel():
     assert "new" not in d["child"]
     assert "old" not in d["tail"]
     assert d["tail", "new"] == 3
+    assert len(visited) == 3
 
 
 def test_rename_re_shallow_with_str_patterns():
@@ -215,22 +227,38 @@ def test_rename_re_shallow_with_str_patterns():
     assert d["c"] == 3
 
 
-def test_rename_re_deep_with_cancel():
-    d = sdict({"//r": 0, "child": {"//r": 1}, "tail": {"//r": 2}})
-    g = d.rename_key_re(r"^//(.*)$", r"@@\1", deep=True)
+def test_rename_re_shallow_can_rename_false_skips_without_error():
+    d = sdict({"//a": 1, "//b": 2, "c": 3})
+    ret = d.rename_key_re(
+        r"^//(.*)$",
+        r"comment_\1",
+        deep=False,
+        can_rename=lambda _: False,
+    )
+    assert ret is d
+    assert "//a" in d and "comment_a" not in d
+    assert "//b" in d and "comment_b" not in d
 
-    parent = next(g)
-    assert parent is d
-    parent = g.send(None)
-    assert parent is d["child"]
-    parent = g.send(False)
-    assert parent is d["tail"]
-    with pytest.raises(StopIteration):
-        g.send(None)
+
+def test_rename_re_deep_with_can_rename():
+    d = sdict({"//r": 0, "child": {"//r": 1}, "tail": {"//r": 2}})
+    visited = []
+
+    def can_rename(parent):
+        visited.append(parent)
+        return parent is not d["child"]
+
+    d.rename_key_re(
+        r"^//(.*)$",
+        r"@@\1",
+        deep=True,
+        can_rename=can_rename,
+    )
 
     assert "@@r" in d and "//r" not in d
     assert "//r" in d["child"] and "@@r" not in d["child"]
     assert "@@r" in d["tail"] and "//r" not in d["tail"]
+    assert len(visited) == 3
 
 
 def test_merge_conflict_old():

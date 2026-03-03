@@ -1,6 +1,7 @@
 # jsonc_sdict 即典
 
-Doc: [English](./README.md)
+[![PyPI - Version](https://img.shields.io/pypi/v/jsonc-sdict)](https://pypi.org/project/jsonc-sdict/)
+ | Doc: [English](./README.md)
 
 支持 JSONC/HJSON 的注释保留工具，提供实用、直接的字典式 API，适合配置文件编辑场景。
 
@@ -16,7 +17,7 @@ Doc: [English](./README.md)
 ### 安装
 
 ```bash
-pip install jsonc_sdict
+pip install jsonc-sdict
 ```
 
 本地开发安装：
