@@ -38,7 +38,7 @@ before_seps: tuple[BeforeSep] = get_args(BeforeSep)
 
 @dataclass
 class CommentData:
-    prefix: hjson._CommentPrefix
+    prefix: "hjson._CommentPrefix"
     keyname: str
     before: BeforeSep = ""
 
