@@ -1,12 +1,13 @@
-<center>
-<img src="./logo.svg" alt="logo" width="128" height="128" />
+[English](./README.md)
+
+<div align="center">
+<img src="https://raw.githubusercontent.com/AClon314/jsonc-sdict/refs/heads/main/logo.svg" alt="logo" width="128" height="128" />
 
 # jsonc_sdict 即典
 
-</center>
-
 [![PyPI - Version](https://img.shields.io/pypi/v/jsonc-sdict)](https://pypi.org/project/jsonc-sdict/)
-Doc: [English](./README.md)
+
+</div>
 
 支持 JSONC/HJSON 的注释保留工具，提供实用、直接的字典式 API，适合配置文件编辑场景。
 

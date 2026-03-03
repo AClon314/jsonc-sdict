@@ -1,12 +1,13 @@
-<center>
-<img src="./logo.svg" alt="logo" width="128" height="128" />
+[简中文档](https://github.com/AClon314/jsonc-sdict/blob/main/README-zh_CN.md)
+
+<div align="center">
+<img src="https://raw.githubusercontent.com/AClon314/jsonc-sdict/refs/heads/main/logo.svg" alt="logo" width="128" height="128" />
 
 # jsonc_sdict 即典
 
-</center>
-
 [![PyPI - Version](https://img.shields.io/pypi/v/jsonc-sdict)](https://pypi.org/project/jsonc-sdict/)
-Doc: [简中文档](./README-zh_CN.md)
+
+</div>
 
 Round-trip comments for JSONC/HJSON, with dict-like APIs that stay simple & easy for app config editing.
 
