@@ -26,7 +26,7 @@ from typing import Literal, Any, Unpack, get_args, cast, overload
 from warnings import deprecated
 
 from jsonc_sdict.share import UNSET, getLogger, iterable
-from jsonc_sdict.sdict import sdict, set_item, get_item
+from jsonc_sdict.sdict import sdict, set_item, get_item, unref
 
 Log = getLogger(__name__)
 SEED = "-" + uuid4().hex
@@ -65,9 +65,9 @@ def json_dumps(obj: Any) -> str:
 class jsoncDict[K = str, V = Any](sdict[K, V]):
     """
     ### Usage
-    life cycle: jc.loads() → user's jc.insert_comment() → jc.dumps() from restore()
+    life cycle: jsonc() init → user's `jc.insert_comment()` → `jc.full` from jc.dumps()
     ```python
-    jc = jsoncDict(my_str, loads=lambda self, string: hjson.loads(string))
+    jc = jsoncDict(my_str, loads=hjson.loads)
     jc["//unique-keyname"] = "my comment but at end of body"
     jc.insert_comment({
         "/*\\nunique-keyname-1": "my multi-\\nline comments\\n"
@@ -128,7 +128,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         Args:
             raw: text with comment
             loads: callable & able to parse `.jsonc` at least, to parse raw text, eg: `hjson.loads`
-                required when `raw` is str
+                **required** when `raw` is str
             dumps: same as `loads`
             seed: use uuid4.hex as suffix, ensures consistent global uuid-seed per Python startup
             node_comment: if key_name starts_with `/-`, like `/-mynode` will comment the whole tree node, see [kdl](https://kdl.dev/) style
@@ -311,13 +311,6 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         n = len(raw)
         counter = 0
         comment_index = 0
-
-        def to_plain(value: Any):
-            if isinstance(value, Mapping):
-                return OrderedDict((k, to_plain(v)) for k, v in value.items())
-            if iterable(value):
-                return [to_plain(v) for v in value]
-            return value
 
         def new_comment_key(prefix: str) -> str:
             nonlocal counter
@@ -679,7 +672,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         src_start = self._find_root_start(n, code)
         src_end = find_container_end(src_start)
 
-        root_data = to_plain(self.v)
+        root_data = unref(self.v)
         if (
             (not root_data)
             or (code[src_start] == "{" and not isinstance(root_data, Mapping))
@@ -732,226 +725,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         """restore"""
         if obj is None:
             obj = self.v
-        elif isinstance(obj, sdict):
-            obj = obj.v
-        ind = "  " * depth
-        next_ind = "  " * (depth + 1)
-
-        def comment_priority(parts: CommentData) -> int:
-            if parts.prefix == "/*":
-                return 0
-            if parts.prefix in self._single_comment:
-                return 1
-            if parts.prefix == "/-":
-                return 2
-            return 3
-
-        def render_bucket(bucket: list[tuple[int, str]]) -> str:
-            if not bucket:
-                return ""
-            ordered = [text for _, text in sorted(bucket, key=lambda x: x[0])]
-            return " ".join(ordered)
-
-        if isinstance(obj, Mapping):
-            lines = ["{"]
-            items = list(obj.items())
-            data_total = sum(
-                1
-                for k, _ in items
-                if (parts := self.split_keyname(k)) is None or parts.prefix == "/-"
-            )
-            data_seen = 0
-
-            pending_line_above: list[str] = []
-            pending_before_key: list[str] = []
-            pending_before_colon: list[str] = []
-            pending_before_value: list[str] = []
-
-            line_base: str | None = None
-            line_has_comma = False
-            before_comma_comments: list[tuple[int, str]] = []
-            after_comma_comments: list[tuple[int, str]] = []
-
-            def flush_line():
-                nonlocal \
-                    line_base, \
-                    line_has_comma, \
-                    before_comma_comments, \
-                    after_comma_comments
-                if line_base is None:
-                    return
-                line = line_base
-                before_text = render_bucket(before_comma_comments)
-                if before_text:
-                    line += " " + before_text
-                if line_has_comma:
-                    line += ","
-                after_text = render_bucket(after_comma_comments)
-                if after_text:
-                    line += " " + after_text
-                lines.append(line)
-                line_base = None
-                line_has_comma = False
-                before_comma_comments = []
-                after_comma_comments = []
-
-            for k, val in items:
-                parts = self.split_keyname(k)
-                if parts is not None and parts.prefix != "/-":
-                    rendered = self._restore_comment(parts, val, next_ind)
-                    priority = comment_priority(parts)
-                    if parts.before == ",":
-                        if line_base is not None:
-                            before_comma_comments.append((priority, rendered))
-                        else:
-                            pending_line_above.append(rendered)
-                        continue
-                    if parts.before == "\n":
-                        if parts.prefix in self._single_comment:
-                            pending_line_above.append(rendered)
-                        elif line_base is not None:
-                            after_comma_comments.append((priority, rendered))
-                        else:
-                            pending_line_above.append(rendered)
-                        continue
-                    if parts.before == "k":
-                        pending_before_key.append(rendered)
-                        continue
-                    if parts.before == ":":
-                        pending_before_colon.append(rendered)
-                        continue
-                    if parts.before == "v":
-                        pending_before_value.append(rendered)
-                        continue
-                    if parts.prefix in self._single_comment:
-                        if line_base is not None:
-                            after_comma_comments.append((priority, rendered))
-                        else:
-                            pending_line_above.append(rendered)
-                    else:
-                        pending_before_key.append(rendered)
-                    continue
-
-                flush_line()
-                for c in pending_line_above:
-                    lines.append(f"{next_ind}{c}")
-                pending_line_above = []
-
-                data_seen += 1
-                has_comma = data_seen < data_total
-                if parts is not None and parts.prefix == "/-":
-                    out_key = f"{parts.prefix}{parts.keyname}"
-                else:
-                    out_key = k
-                key_text = self.dumps_raw(out_key)
-                value_text = self.dumps(val, depth + 1)
-
-                key_side = (
-                    (" ".join(pending_before_key) + " ") if pending_before_key else ""
-                ) + key_text
-                if pending_before_colon:
-                    key_side += " " + " ".join(pending_before_colon)
-                val_side = (
-                    (" " + " ".join(pending_before_value))
-                    if pending_before_value
-                    else ""
-                ) + f" {value_text}"
-
-                line_base = f"{next_ind}{key_side}:{val_side}"
-                line_has_comma = has_comma
-                pending_before_key = []
-                pending_before_colon = []
-                pending_before_value = []
-
-            flush_line()
-            for c in (
-                pending_line_above
-                + pending_before_key
-                + pending_before_colon
-                + pending_before_value
-            ):
-                lines.append(f"{next_ind}{c}")
-            lines.append(f"{ind}}}")
-            return "\n".join(lines)
-
-        elif iterable(obj):
-            lines = ["["]
-            items = list(obj)
-            data_total = sum(
-                1 for item in items if self._is_list_comment_item(item) is None
-            )
-            data_seen = 0
-
-            pending_before_item: list[str] = []
-            line_base: str | None = None
-            line_has_comma = False
-            before_comma_comments: list[tuple[int, str]] = []
-            after_comma_comments: list[tuple[int, str]] = []
-
-            def flush_item_line():
-                nonlocal \
-                    line_base, \
-                    line_has_comma, \
-                    before_comma_comments, \
-                    after_comma_comments
-                if line_base is None:
-                    return
-                line = line_base
-                before_text = render_bucket(before_comma_comments)
-                if before_text:
-                    line += " " + before_text
-                if line_has_comma:
-                    line += ","
-                after_text = render_bucket(after_comma_comments)
-                if after_text:
-                    line += " " + after_text
-                lines.append(line)
-                line_base = None
-                line_has_comma = False
-                before_comma_comments = []
-                after_comma_comments = []
-
-            for item in items:
-                comment = self._is_list_comment_item(item)
-                if comment is not None:
-                    parts, val = comment
-                    rendered = self._restore_comment(parts, val, next_ind)
-                    priority = comment_priority(parts)
-                    if parts.before == ",":
-                        if line_base is not None:
-                            before_comma_comments.append((priority, rendered))
-                        else:
-                            pending_before_item.append(rendered)
-                    elif parts.before == "\n":
-                        if parts.prefix in self._single_comment:
-                            pending_before_item.append(rendered)
-                        elif line_base is not None:
-                            after_comma_comments.append((priority, rendered))
-                        else:
-                            pending_before_item.append(rendered)
-                    elif parts.prefix in self._single_comment:
-                        if line_base is not None:
-                            after_comma_comments.append((priority, rendered))
-                        else:
-                            pending_before_item.append(rendered)
-                    else:
-                        pending_before_item.append(rendered)
-                    continue
-
-                flush_item_line()
-                for c in pending_before_item:
-                    lines.append(f"{next_ind}{c}")
-                pending_before_item = []
-
-                data_seen += 1
-                line_base = f"{next_ind}{self.dumps(item, depth + 1)}"
-                line_has_comma = data_seen < data_total
-
-            flush_item_line()
-            for c in pending_before_item:
-                lines.append(f"{next_ind}{c}")
-            lines.append(f"{ind}]")
-            return "\n".join(lines)
+        obj = unref(obj)
 
         return self.dumps_raw(obj)
 
@@ -1227,7 +1001,7 @@ class hjsonDict[K = str, V = Any](jsoncDict[K, V]):
         rendered = super().dumps(obj=obj, depth=depth)
         if depth != 0:
             return rendered
-        target = self.v if obj is None else (obj.v if isinstance(obj, sdict) else obj)
+        target = unref(self.v if obj is None else obj)
         if not (
             getattr(self, "_rootless_object", False) and isinstance(target, Mapping)
         ):
@@ -1248,7 +1022,7 @@ Type_jsonc = jsoncDict | type[jsoncDict]
 class CompactJSONEncoder(json.JSONEncoder):
     """A JSON Encoder that puts small containers on single lines. by @jannismain at: https://gist.github.com/jannismain/e96666ca4f059c3e5bc28abb711b5c92"""
 
-    CONTAINER_TYPES = (Mapping, Sequence)
+    CONTAINER_TYPES = (list, tuple, dict)
     """Container datatypes include primitives or other containers."""
 
     MAX_WIDTH = 150
@@ -1266,10 +1040,10 @@ class CompactJSONEncoder(json.JSONEncoder):
 
     def encode(self, o):
         """Encode JSON object *o* with respect to single line lists."""
-        if isinstance(o, Mapping):
-            return self._encode_object(o)
-        if iterable(o):
+        if isinstance(o, (list, tuple)):
             return self._encode_list(o)
+        if isinstance(o, dict):
+            return self._encode_object(o)
         return json.dumps(
             o,
             skipkeys=self.skipkeys,
@@ -1329,10 +1103,10 @@ class CompactJSONEncoder(json.JSONEncoder):
         )
 
     def _primitives_only(self, o: list | tuple | dict):
-        if isinstance(o, Mapping):
-            return not any(isinstance(el, self.CONTAINER_TYPES) for el in o.values())
-        if iterable(o):
+        if isinstance(o, (list, tuple)):
             return not any(isinstance(el, self.CONTAINER_TYPES) for el in o)
+        elif isinstance(o, dict):
+            return not any(isinstance(el, self.CONTAINER_TYPES) for el in o.values())
 
     @property
     def indent_str(self) -> str:

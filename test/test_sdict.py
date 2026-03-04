@@ -1,5 +1,6 @@
 import pytest
-from jsonc_sdict.sdict import sdict  # as SDict
+from types import MappingProxyType
+from jsonc_sdict.sdict import sdict, unref
 from share import get_caller
 
 
@@ -31,6 +32,37 @@ def test_init_ref():
     d = sdict(ref=data)
     assert d.ref == data
     assert d.v == data
+
+
+def test_unref_property_deep_and_cache_invalidate():
+    d = sdict({"a": {"b": 1}, "arr": [{"c": 2}, 3]})
+
+    assert d.unref == {"a": {"b": 1}, "arr": [{"c": 2}, 3]}
+    assert isinstance(d.unref, dict)
+    assert isinstance(d.unref["arr"], list)
+    assert not isinstance(d.unref["a"], sdict)
+
+    d["x"] = 4
+    assert d.unref == {"a": {"b": 1}, "arr": [{"c": 2}, 3], "x": 4}
+
+
+def test_unref_function_handles_nested_sdict():
+    raw = {"left": sdict({"x": 1}), "right": [sdict({"y": 2})]}
+    assert unref(raw) == {"left": {"x": 1}, "right": [{"y": 2}]}
+
+
+def test_unref_property_for_list_root():
+    d = sdict(ref=[{"a": 1}, [2, 3]])
+    assert d.unref == [{"a": 1}, [2, 3]]
+    assert isinstance(d.unref, list)
+
+
+def test_unref_const_returns_immutable_containers():
+    d = sdict({"a": {"b": 1}, "arr": [{"c": 2}, 3]})
+    out = unref(d, const=True)
+    assert isinstance(out, MappingProxyType)
+    assert isinstance(out["a"], MappingProxyType)
+    assert isinstance(out["arr"], tuple)
 
 
 def test_nested_access():

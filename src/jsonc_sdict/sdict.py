@@ -2,6 +2,8 @@
 - Life cycle: long-lived
 """
 
+from types import MappingProxyType
+
 import re
 import itertools
 from weakref import ref
@@ -305,6 +307,43 @@ def dfs[K = int, V = Any, KP = str](
     return self
 
 
+def unref(obj, const=False, memo: dict[int, Any] | None = None):
+    """
+    Args:
+        const: return tuple/MappingProxyType if const else list/dict,
+        memo: just leave default, internal {id(): value}
+    """
+    if memo is None:
+        memo = {}
+    value = obj.v if isinstance(obj, sdict) else obj
+    if not (isinstance(value, Mapping) or iterable(value)):
+        return value
+
+    obj_id = id(value)
+    if obj_id in memo:
+        return memo[obj_id]
+
+    if isinstance(value, Mapping):
+        out = {}
+        memo[obj_id] = out
+        for k, v in value.items():
+            out[k] = unref(v, const=const, memo=memo)
+        if const:
+            frozen = MappingProxyType(out)
+            memo[obj_id] = frozen
+            return frozen
+        return out
+
+    out_list = []
+    memo[obj_id] = out_list
+    out_list.extend(unref(v, const=const, memo=memo) for v in value)
+    if const:
+        frozen = tuple(out_list)
+        memo[obj_id] = frozen
+        return frozen
+    return out_list
+
+
 class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
     """
     search-friendly dict, or "dict design for json in actual business", like benedict, but less limitation, more useful context, more strict type hint.
@@ -318,18 +357,6 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
     """
 
     type IterAsMap = Iterable[tuple[K, V]] | Iterable[Iterable[K | V]]
-
-    @property
-    def v(self):
-        """
-        return self.ref if self is empty and ref is set else self\n
-        will unpack weakref.ref
-        """
-        if not self.use_ref:
-            return self
-        elif isinstance(self.ref, ref):
-            return self.ref()
-        return self.ref
 
     class _KwargsInit(TypedDict, total=False):
         data: Mapping[K, V] | None
@@ -399,6 +426,27 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         except AttributeError:
             pass
             # Log.warning(e)
+        try:
+            del self.unref
+        except AttributeError:
+            pass
+
+    @property
+    def v(self):
+        """
+        return self.ref if self is empty and ref is set else self\n
+        will unpack weakref.ref
+        """
+        if not self.use_ref:
+            return self
+        elif isinstance(self.ref, ref):
+            return self.ref()
+        return self.ref
+
+    @cached_property
+    def unref(self):
+        """deep unref all `sdict.v`, used for `json.dumps(sd.unref)`"""
+        return unref(self.v)
 
     def getitem(
         self,

@@ -5,7 +5,7 @@ from typing import cast
 import hjson
 import pytest
 
-from jsonc_sdict.jsonc import AS_DATA, jsoncDict, hjsonDict
+from jsonc_sdict.jsonc import AS_DATA, jsoncDict, hjsonDict, CompactJSONEncoder
 from jsonc_sdict.share import getLogger
 
 Log = getLogger(__name__)
@@ -13,7 +13,13 @@ Log.setLevel("DEBUG")
 
 
 def _dumps(obj, **kwargs):
-    return json.dumps(obj, ensure_ascii=False, indent=2)
+    return json.dumps(obj, ensure_ascii=False, indent=2, **kwargs)
+
+
+def _dumps_compact(obj, **kwargs):
+    return json.dumps(
+        obj, cls=CompactJSONEncoder, ensure_ascii=False, indent=2, **kwargs
+    )
 
 
 def Jsonc(raw, **kwargs):
@@ -217,3 +223,14 @@ def test_readme_example(old_name: str, new_name: str, initFunc, expected_block: 
         assert not out.lstrip().startswith("{")
         assert '"10": "# is single line in hjson" # comment' in out
         assert "\n// end of body" in out
+
+
+def test_compact(old_name="compact.jsonc"):
+    base = Path(__file__).parent
+
+    text = (base / old_name).read_text(encoding="utf-8")
+    jsonc = hjson.loads(text)
+    out_expected = json.dumps(jsonc, cls=CompactJSONEncoder, indent=2)
+    jc = jsoncDict(text, hjson.loads, dumps=_dumps_compact)
+    Log.debug("out_expected=%s\nfull=%s", out_expected, jc.full)
+    assert jc.full == out_expected
