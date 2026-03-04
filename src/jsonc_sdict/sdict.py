@@ -391,12 +391,12 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
     def del_cache(self):
         try:
             del self.height
-        except AttributeError as e:
+        except AttributeError:
             pass
             # Log.warning(e)
         try:
             del self.childkeys
-        except AttributeError as e:
+        except AttributeError:
             pass
             # Log.warning(e)
 
@@ -955,8 +955,8 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
                 target_index = self.index(key)
                 if after:
                     target_index += 1
-            except (ValueError, TypeError):
-                raise KeyError(key, "not found")
+            except (ValueError, TypeError) as e:
+                raise KeyError(key, "not found") from e
 
         for k, v in update.items():
             self[k] = v
@@ -973,13 +973,13 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         if key is not UNSET:
             try:
                 return list(self.keys()).index(key)
-            except ValueError:
-                raise ValueError(f"Key {key!r} not found")
+            except ValueError as e:
+                raise ValueError(f"Key {key!r} not found") from e
         else:
             try:
                 return list(self.values()).index(value)
-            except ValueError:
-                raise ValueError(f"Value {value!r} not found")
+            except ValueError as e:
+                raise ValueError(f"Value {value!r} not found") from e
 
     # TODO cache?
     def i_to_k(self, index: int) -> K:

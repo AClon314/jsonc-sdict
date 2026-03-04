@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence, Iterable
-from typing import Literal, Any, get_args, cast, Unpack
+from typing import Literal, Any, Unpack, get_args, cast, overload
 from warnings import deprecated
 
 from jsonc_sdict.share import UNSET, getLogger, iterable
@@ -87,10 +87,36 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     def __init_subclass__(cls) -> None:
         cls._comment_prefixes = get_args(cls._CommentPrefix)
 
+    @overload
+    def __init__(
+        self,
+        raw: Mapping[K, V],
+        loads: Callable[[str], Any] | None = None,
+        dumps: Callable[[Any], str] = json_dumps,
+        seed: str = SEED,
+        node_comment=True,
+        auto_indent=True,
+        init_commentKey=True,
+        **kwargs: Unpack[sdict._KwargsInit],
+    ): ...
+
+    @overload
+    def __init__(
+        self,
+        raw: str,
+        loads: Callable[[str], Any],
+        dumps: Callable[[Any], str] = json_dumps,
+        seed: str = SEED,
+        node_comment=True,
+        auto_indent=True,
+        init_commentKey=True,
+        **kwargs: Unpack[sdict._KwargsInit],
+    ): ...
+
     def __init__(
         self,
         raw: str | Mapping[K, V],
-        loads: Callable[[str], Any],
+        loads: Callable[[str], Any] | None = None,
         dumps: Callable[[Any], str] = json_dumps,
         seed: str = SEED,
         node_comment=True,
@@ -101,17 +127,14 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         """
         Args:
             raw: text with comment
-            loads: **required**, callable & able to parse `.jsonc` at least, to parse raw text
+            loads: callable & able to parse `.jsonc` at least, to parse raw text, eg: `hjson.loads`
+                required when `raw` is str
             dumps: same as `loads`
             seed: use uuid4.hex as suffix, ensures consistent global uuid-seed per Python startup
             node_comment: if key_name starts_with `/-`, like `/-mynode` will comment the whole tree node, see [kdl](https://kdl.dev/) style
             init_commentKey: if you ensure there's no key starts_with `/`, or you want treated all comment_prefix key as real data, you can set `False`, and it can be faster.
             **kwargs: see `sdict()`
         """
-        if not callable(loads):
-            raise TypeError(
-                f"{loads=} should be callable & can parse .jsonc at least, example: `hjson.loads`"
-            )
         self._loads_raw = loads
         self._dumps_raw = dumps
 
@@ -141,7 +164,12 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
 
     def loads_raw(self, raw: str) -> Any:
         """`loads` from `__init__`, should be able to parse .jsonc at least"""
-        return self._loads_raw(raw)
+        try:
+            return self._loads_raw(raw)  # type: ignore
+        except Exception as e:
+            raise TypeError(
+                f"{self._loads_raw=} should be callable & can parse .jsonc at least, example: `hjson.loads`"
+            ) from e
 
     def dumps_raw(self, obj: Any) -> str:
         return self._dumps_raw(obj)
@@ -1046,8 +1074,8 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
                     target_index = self.index(cast(K, lookup_key))
                     if after:
                         target_index += 1
-                except (ValueError, TypeError):
-                    raise KeyError(key, "not found")
+                except (ValueError, TypeError) as e:
+                    raise KeyError(key, "not found") from e
 
             inserted_keys: set[Any] = set()
             for k, v in update.items():
