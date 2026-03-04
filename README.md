@@ -51,7 +51,7 @@ raw = """
 def loads(self, obj):
     return hjson.loads(obj, ...) # pre-fill your custom args here
 
-jc = jsonc(raw, loads, dumps=hjson.dumps)
+jc = jsoncDict(raw, loads, dumps=hjson.dumps)
 jc.insert_comment(
     {
         "/*\\nnew-block": "multi\\nline\\n",

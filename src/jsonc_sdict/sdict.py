@@ -7,7 +7,7 @@ import itertools
 from weakref import ref
 from collections import OrderedDict
 from functools import cached_property, partial
-from typing import Any, Self, cast, Literal, overload
+from typing import Any, Self, cast, Literal, overload, TypedDict
 from collections.abc import (
     Callable,
     Iterable,
@@ -331,14 +331,23 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
             return self.ref()
         return self.ref
 
+    class _KwargsInit(TypedDict, total=False):
+        data: Mapping[K, V] | None
+        ref: R | None
+        deep: bool
+        parent: WeakList[Self]
+        keypath: KeyPaths[KP, Self]
+        pathCount: PathCount
+        getChild: GetChildFunc
+
     def __init__(
         self,
         data: Mapping[K, V] | IterAsMap | None = None,
         ref: R | None = None,
         *,
         deep=True,
-        parent: WeakList["sdict"] = WeakList(),
-        keypath: KeyPaths[KP, "sdict"] = (),
+        parent: WeakList[Self] = WeakList(),
+        keypath: KeyPaths[KP, Self] = (),
         pathCount: PathCount = (0,),
         getChild: GetChildFunc = get_children,
     ):

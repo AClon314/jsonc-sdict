@@ -1,11 +1,11 @@
 import json
 from pathlib import Path
-from collections import OrderedDict
+from typing import cast
 
 import hjson
 import pytest
 
-from jsonc_sdict.jsonc import AS_DATA, jsonc, hjson as hjson_wrap
+from jsonc_sdict.jsonc import AS_DATA, jsoncDict, hjsonDict
 from jsonc_sdict.share import getLogger
 
 Log = getLogger(__name__)
@@ -17,11 +17,11 @@ def _dumps(obj, **kwargs):
 
 
 def Jsonc(raw, **kwargs):
-    return jsonc(raw, hjson.loads, dumps=_dumps, **kwargs)
+    return jsoncDict(raw, hjson.loads, dumps=_dumps, **kwargs)
 
 
 def Hjson(raw, **kwargs):
-    return hjson_wrap(raw, hjson.loads, dumps=_dumps, **kwargs)
+    return hjsonDict(raw, hjson.loads, dumps=_dumps, **kwargs)
 
 
 def test_setitem_comment_key_seed_and_data_escape():
@@ -55,11 +55,13 @@ def test_to_inner_key_batch_converts_deep_prefixes_and_as_data():
     )
     seed = jc.SEED
 
-    root = OrderedDict.__getitem__(jc, "root")
+    root = dict.__getitem__(cast(dict[str, object], jc), "root")
+    assert isinstance(root, dict)
     assert list(root.keys()) == ["//line", "/*blk", "/-node", "//real" + AS_DATA]
 
     jc.to_inner_key_batch(jc.dumps())
-    root = OrderedDict.__getitem__(jc, "root")
+    root = dict.__getitem__(cast(dict[str, object], jc), "root")
+    assert isinstance(root, dict)
     assert list(root.keys()) == [
         f"//line{seed}",
         f"/*blk{seed}",
@@ -103,15 +105,17 @@ def test_loads_parses_comments_into_data_and_keeps_edges():
     assert any(k.startswith("//") for k in root_comment_keys)
     assert any(k.startswith("/*") for k in root_comment_keys)
 
-    arr = OrderedDict.__getitem__(jc, "arr")
+    arr = dict.__getitem__(cast(dict[str, object], jc), "arr")
     assert isinstance(arr, list)
-    assert any(
-        isinstance(x, dict)
-        and len(x) == 1
-        and next(iter(x)).startswith("//")
-        and next(iter(x)).endswith(jc.SEED)
-        for x in arr
-    )
+    found_comment_item = False
+    for x in arr:
+        if not (isinstance(x, dict) and len(x) == 1):
+            continue
+        key = next(iter(x))
+        if isinstance(key, str) and key.startswith("//") and key.endswith(jc.SEED):
+            found_comment_item = True
+            break
+    assert found_comment_item
 
 
 def test_body_cache_refresh_on_mutation_and_body_setter():
@@ -175,7 +179,7 @@ def test_readme_example(old_name: str, new_name: str, initFunc, expected_block: 
     new_path = base / new_name
 
     text = (base / old_name).read_text(encoding="utf-8")
-    jc: jsonc = initFunc(text)
+    jc: jsoncDict = initFunc(text)
     Log.debug(f"{list(jc.keys())=}")
 
     # end-of-body single-line comment
@@ -186,8 +190,9 @@ def test_readme_example(old_name: str, new_name: str, initFunc, expected_block: 
         {
             "/*\nunique-keyname-1": "my multi-\nline comments\n",
             "//\nunique-keyname-2": "my line-above comments\n",
-            "//your data key overlap with comment-keyname rule?"
-            + AS_DATA: ["treat as data, not comment"],
+            "//your data key overlap with comment-keyname rule?" + AS_DATA: [
+                "treat as data, not comment"
+            ],
         },
         key="2",
     )
