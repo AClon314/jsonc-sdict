@@ -15,6 +15,8 @@
 - 通过 `sdict` 处理嵌套结构更方便，等价于 [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
 - 提供弱引用有序容器 `weakList` / `OrderedWeakSet`。
 
+> 注释也是数据，就如冯・诺依曼，代码也是数据
+
 > [!WARNING]
 > 项目当前仍处于 alpha（`0.1.x`）阶段，正在持续重构。
 
@@ -103,7 +105,7 @@ print(jc.full)
     "6//": 6,
     "/*k7<SEED>": " 7 ",
     "7": 7,
-    "/-node<SEED>": {"ignored": "node comment"},
+    "/-node<SEED>": {"ignored": "slash_dash comment"},
     "node": {"kept": "real data"},
 }
 ```
@@ -121,7 +123,7 @@ print(jc.full)
 /* // 这是多行注释 */ trailing-text-is-illegal
 ```
 
-## Develop
+## 开发&调试
 
 ### env
 
@@ -139,8 +141,6 @@ LOG=DEBUG pytest -q
 ### 内部原理
 
 #### jsonc
-
-注释也是数据
 
 - 行内注释（`//...`）
   - what：注释附着在当前数据项行内。
@@ -182,3 +182,79 @@ LOG=DEBUG pytest -q
 
 - `python-poetry/tomlkit`
 - `ruamel.yaml`
+
+## 题外话
+
+### 保留注释的双向读写
+
+在开发本包的时候，刷到了这位老哥的评论：“[其中很少有人需要这个](https://github.com/toml-lang/toml/issues/836#issuecomment-1476585718)”
+
+我觉得这个功能就是，只要有人做出来，就会有很多人会用。
+
+### 痛苦的依赖开发
+
+- WeakList: 因为动态语言有GC，**子**引用**父**必须是弱引用，考虑到有多个父的极端情况，自制了一个WeakList/OrderedWeakSet
+- merge: DeepDiff不支持合并
+- dictDict: list[dict]很难合并，而dict很好合并，需要让用户主动选择一个idKey，来方便确定list[dict]内的old_dict,new_dict之间的对应关系
+- sdict: 注释在数据中的顺序很重要，继承了OrderedDict重写了纯python的实现。
+  且因可能存在很深层的数据结构，需要一个方便访问深层结构的api，故参考了benedict(benedict写死了用str做键名)，从头重写了大部分逻辑来解除这个限制。
+
+### 类似DeepDiff的库
+
+#### JavaScript / TypeScript
+
+- **microdiff** (https://github.com/AsyncBanana/microdiff)  
+  极快、零依赖、现代实现（比 deep-diff 快很多）。  
+  Stars: ~1.5k–2k+  
+  最后更新: 近期活跃（2024-2025仍有更新）  
+  Open issues: 较少（10-20个左右）
+
+- **just-diff** / **deep-object-diff** 等也类似，但 microdiff 和 deep-diff 是最直接的竞品。
+
+#### Java
+
+- **javers** (https://github.com/javers/javers)  
+  最成熟、最接近 DeepDiff 的 Java 库，支持任意对象图的深度 diff、变更追踪、快照等，企业级常用。  
+  Stars: ~3.5k–4k+  
+  最后更新: 非常活跃（2025-2026仍在频繁提交）  
+  Open issues: 几十到上百（项目较大）
+
+- **java-object-diff** (https://github.com/SQiShER/java-object-diff)  
+  专注于对象深度差异。  
+  Stars: ~1k 左右  
+  最后更新: 几年前（基本稳定）  
+  Open issues: 较少
+
+#### ~~Go (Golang)~~
+
+- **qri-io/deepdiff** (https://github.com/qri-io/deepdiff)  
+  结构化数据深度 diff，目标是近线性时间复杂度。  
+  Stars: 几百（不算特别高）  
+  最后更新: 2021-2023 左右（维护较少）  
+  Open issues: 少量
+
+Go 语言中**没有**特别火的“DeepDiff 等价物”，很多项目自己实现或用 reflect 简单比较。
+
+#### Rust
+
+- **turbodiff** (https://github.com/BrightNight-Energy/turbodiff)  
+  明确标榜为 Rust 版的 fast deepdiff，速度优先。  
+  Stars: 几百（新兴）  
+  最后更新: 近期（2024-2025活跃）  
+  Open issues: 很少
+
+Rust 社区更倾向使用 serde + 自定义 diff，或类似工具，但 turbodiff 是最接近的。
+
+#### 其他语言补充
+
+- **Clojure** → **lambdaisland/deep-diff2** (https://github.com/lambdaisland/deep-diff2)  
+  Stars: ~几百  
+  最后更新: 活跃  
+  非常适合 Clojure 数据结构。
+
+- **Swift** → **DeepDiff** (https://github.com/onmyway133/DeepDiff)  
+  同名但不同库，iOS/macOS 常用。  
+  Stars: ~2k+  
+  最后更新: 活跃
+
+- **Julia** → **DeepDiffs.jl** (较小众)

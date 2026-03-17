@@ -1,9 +1,11 @@
 """shared static public lib"""
 
+from types import MappingProxyType
+
 import os
 import logging
-from collections.abc import Callable, Iterable
-from typing import Any, ParamSpec, TypeGuard, TypeVar, cast
+from collections.abc import Callable, Iterable, Generator
+from typing import cast, Any, ParamSpec, TypeGuard, TypeVar, FrozenSet
 
 
 type RAISE = "RAISE"  # type:ignore
@@ -12,6 +14,8 @@ type UNSET = "UNSET"  # type: ignore
 """do NOT use this arg, like undefined"""
 type NONE = "NONE"  # type: ignore
 """gen.send(NONE) to give None as new value"""
+Scalar = None | bool | int | float | str | bytes | bytearray
+ImmutableContainers = tuple | MappingProxyType | FrozenSet
 
 LOG = os.environ.get("LOG", "INFO").upper()
 IS_DEBUG = LOG == "DEBUG" or os.environ.get("TERM_PROGRAM", None)
@@ -29,6 +33,52 @@ def getLogger(name: str | None = None) -> logging.Logger:
 def iterable[V](obj: Iterable[V] | Any) -> TypeGuard[Iterable[V]]:
     """Iterable but NOT str, bytes"""
     return isinstance(obj, Iterable) and not isinstance(obj, (str, bytes, bytearray))
+
+
+def return_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> R:
+    """
+    Args:
+        send: to gen
+
+    Raises:
+        GeneratorExit
+        MemoryError
+    """
+    try:
+        try:
+            v = gen.send(send)
+        except TypeError:
+            v = gen.send(None)
+        while True:
+            v = gen.send(send)
+    except StopIteration as e:
+        return e.value
+
+
+def yields_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> tuple[list[Y], R]:
+    """
+    Args:
+        send: to gen
+
+    Returns:
+        return, yields
+
+    Raises:
+        GeneratorExit
+        MemoryError
+    """
+    yields: list[Y] = []
+    try:
+        try:
+            v = gen.send(send)
+        except TypeError:
+            v = gen.send(None)
+        yields.append(v)
+        while True:
+            v = gen.send(send)
+            yields.append(v)
+    except StopIteration as e:
+        return yields, e.value
 
 
 def in_range(v: int, Slice: slice) -> bool:
@@ -75,7 +125,7 @@ def in_range(v: int, Slice: slice) -> bool:
                 return stop < v <= start and (v - start) % step == 0
 
 
-def valid_len(len: int, Slice: slice) -> int:
+def len_slice(len: int, Slice: slice) -> int:
     """
     计算对长度为 len 的序列应用指定切片后，得到的新序列的有效长度
 

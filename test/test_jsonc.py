@@ -5,7 +5,7 @@ from typing import cast
 import hjson
 import pytest
 
-from jsonc_sdict.jsonc import AS_DATA, jsoncDict, hjsonDict, CompactJSONEncoder
+from jsonc_sdict.jsonc import jsoncDict, hjsonDict, CompactJSONEncoder
 from jsonc_sdict.share import getLogger
 
 Log = getLogger(__name__)
@@ -57,9 +57,8 @@ def test_to_inner_key_batch_converts_deep_prefixes_and_as_data():
                 "//real" + AS_DATA: 4,
             }
         },
-        init_commentKey=False,
+        has_comment=True,
     )
-    seed = jc.SEED
 
     root = dict.__getitem__(cast(dict[str, object], jc), "root")
     assert isinstance(root, dict)

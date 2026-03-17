@@ -16,7 +16,7 @@
 // "9": 9
 "/-node": {
 // line-above comment
-"just ignore these": "i am in node comment"
+"just ignore these": "i am in slash_dash comment"
 },
 // before node
 "node": {

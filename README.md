@@ -15,6 +15,8 @@ Round-trip comments for JSONC/HJSON, with dict-like APIs that stay simple & easy
 - Work with nested structures via `sdict` ≈ [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
 - Use weak-reference ordered containers via `weakList`/`OrderedWeakSet`.
 
+> Comments are data too, just like codes are data too by John von Neumann
+
 > [!WARNING]
 > This project is currently alpha (`0.1.x`) and still being refactored.
 
@@ -87,7 +89,7 @@ Common forms:
 | `/*k`               | block comment before key slot            | before JSON key token                         |
 | `/*:`               | block comment before colon slot          | between key and value                         |
 | `/*v`               | block comment before value slot          | after colon, before value                     |
-| `/-`                | node comment                             | comments out a whole subtree (KDL-like style) |
+| `/-`                | slash_dash comment                       | comments out a whole subtree (KDL-like style) |
 
 Example mapping shape:
 
@@ -104,7 +106,7 @@ Example mapping shape:
     "6//": 6,
     "/*k7<SEED>": " 7 ",
     "7": 7,
-    "/-node<SEED>": {"ignored": "node comment"},
+    "/-node<SEED>": {"ignored": "slash_dash comment"},
     "node": {"kept": "real data"},
 }
 ```
@@ -141,12 +143,10 @@ LOG=DEBUG pytest -q
 
 #### jsonc
 
-Comments are data too!
-
 - Inline comment (`//...`): stored as `//<id><SEED>`, restored near the current item.
 - Line-above comment (`//\n...`): stored as line-above mode, restored before next item.
 - Block comment (`/*...*/`): stored with mode markers (`/*`, `/*,`, `/*k`, `/*:`, `/*v`, `/*\n`) to preserve placement.
-- Node comment (`/-name`): special key style that comments out a full subtree, similar to KDL config style.
+- slash_dash comment (`/-name`): special key style that comments out a full subtree, similar to KDL config style.
 
 #### sdict (common pitfalls)
 

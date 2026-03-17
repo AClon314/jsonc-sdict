@@ -1,21 +1,31 @@
 """
-- Life cycle: long-lived
+super dict, signal dict...
 """
-
-from types import MappingProxyType
 
 import re
 import itertools
 from weakref import ref
 from collections import OrderedDict
 from functools import cached_property, partial
-from typing import Any, Self, cast, Literal, overload, TypedDict
+from types import MappingProxyType
+from typing import (
+    cast,
+    get_args,
+    overload,
+    Any,
+    Self,
+    Unpack,
+    Literal,
+    TypedDict,
+    TypeGuard,
+)
 from collections.abc import (
     Callable,
+    Hashable,
     Iterable,
+    Generator,
     Mapping,
     MutableMapping,
-    Generator,
     Sequence,
 )
 
@@ -34,7 +44,7 @@ type Node[K = int, V = Any] = Mapping[K, V] | Iterable[V]
 
 
 type NestDict[K = str, Leaf = Any] = "dict[K, NestDict[K, Leaf] | Leaf]"
-type NestJDict[K = str, Leaf = Any] = "sdict[K, NestJDict[K, Leaf] | Leaf]"
+type NestSDict[K = str, Leaf = Any] = "sdict[K, NestSDict[K, Leaf] | Leaf]"
 type NestMap[K = str, Leaf = Any] = "Mapping[K, NestMap[K, Leaf] | Leaf]"
 type NestMutMap[K = str, Leaf = Any] = "MutableMapping[K, NestMutMap[K, Leaf] | Leaf]"
 type NestDictList[K = str, Leaf = Any] = (
@@ -45,6 +55,10 @@ type NestMapIter[K = str, Leaf = Any] = (
 )
 
 Log = getLogger(__name__)
+
+# ------------------------------------------------------------
+# recursive get
+# ------------------------------------------------------------
 
 
 def get_item[K, D](
@@ -64,7 +78,7 @@ def get_item[K, D](
             or use `()` to raise all Exceptions
     """
     if not iterable(keys):
-        return obj[keys]
+        return obj[keys]  # type: ignore
     try:
         for k in keys:
             obj = obj[k]
@@ -92,7 +106,7 @@ def get_attr[D](
             or use `()` to raise all Exceptions
     """
     if not iterable(keys):
-        return getattr(obj, keys)
+        return getattr(obj, keys)  # type: ignore
     try:
         for k in keys:
             obj = getattr(obj, k)
@@ -129,7 +143,7 @@ def get_item_attr[D](
         if hasattr(obj, "__getitem__"):
             return obj[keys]
         else:
-            return getattr(obj, keys)
+            return getattr(obj, keys)  # type: ignore
     try:
         for k in keys:
             if hasattr(obj, "__getitem__"):
@@ -141,6 +155,16 @@ def get_item_attr[D](
         return default
     except Exception:
         raise
+
+
+def get_item_raise(obj, keys: Iterable) -> Any:
+    """see `get_item()`"""
+    return get_item(obj, keys, noRaise=())
+
+
+def get_item_attr_raise(obj, keys: Iterable):
+    """see `get_item_attr()`"""
+    return get_item_attr(obj, keys, noRaise=())
 
 
 def set_item_attr(obj, keys: Sequence, value) -> None:
@@ -160,31 +184,50 @@ def set_item_attr(obj, keys: Sequence, value) -> None:
     parent = get_item_attr(obj, keys[:-1], noRaise=())
     k = keys[-1]
     if hasattr(obj, "__setitem__"):
-        parent[k] = value
+        parent[k] = value  # type: ignore
     else:
         setattr(parent, k, value)
 
 
 def set_item(obj, keys: Sequence, value) -> None:
-    """
-    access nested obj like `obj[key0].key1...`\n
-    try __getitem__() if has this method, or __getattribute__(), try like this in each level.\n
-    Args:
-        obj: need nested `__getitem__()` or `__getattribute__()` and implemented correctly
-        keys: [key0, key1...]
-    """
+    """see `get_item()` & `get_item_attr()`"""
+    parent = get_item(obj, keys[:-1], noRaise=())
+    parent[keys[-1]] = value  # type: ignore
+
+
+def del_item_attr(obj, keys: Sequence) -> None:
+    """see `set_item_attr()`"""
+    if not iterable(keys):
+        if hasattr(obj, "__delitem__"):
+            del obj[keys]
+        else:
+            delattr(obj, keys)
+        return
     parent = get_item_attr(obj, keys[:-1], noRaise=())
     k = keys[-1]
-    parent[k] = value
+    if hasattr(obj, "__delitem__"):
+        del parent[k]  # type: ignore
+    else:
+        delattr(parent, k)
+
+def del_item(obj, keys: Sequence) -> None:
+    """see `set_item_attr()`"""
+    parent = get_item(obj, keys[:-1], noRaise=())
+    del parent[keys[-1]]  # type: ignore
+
+
+# ------------------------------------------------------------
+# dfs
+# ------------------------------------------------------------
 
 
 def get_children[K, V](
-    self: "sdict[K, V]", raw: Node[K, V] | Any, digList=True
+    self: "sdict[K, V] | Any", raw: Node[K, V] | Any, digList=True
 ):  # -> Generator[Iterable[K,V], None, None] | Generator[Iterable[tuple[int, V]], None, None]:
     """
     default getChild func
     Args:
-        self: sdict that holding raw in `dfs()`
+        self: maybe sdict that holding raw in `dfs()`, or Any
         raw: original data
             - dict: {key: value}
             - list: {index: value}
@@ -206,33 +249,58 @@ def get_children[K, V](
 get_children_noList = partial(get_children, digList=False)
 """get_children(..., digList=False)"""
 
+
 type YieldIfFunc[K, V] = Callable[[sdict[K, V], Node[K, V]], bool]
 
 type GetChildFunc[K, V] = Callable[
-    [sdict[K, V], Node[K, V]], Generator[Iterable[V], None, None] | Iterable[V]
+    [sdict[K, V] | Any, Node[K, V]], Generator[Iterable[V], None, None] | Iterable[V]
 ]
 
+type SetValueFunc = Callable[[Any, Sequence, Any], Any]
 
-def dfs[K = int, V = Any, KP = str](
+
+class _KwargsDfs3(TypedDict, total=False):
+    parents: WeakList[Self]
+    keypaths: KeyPaths
+    pathCount: PathCount
+
+
+class KwargsDfs(_KwargsDfs3, total=False):
+    # obj: Node
+    maxDepth: int | float
+    cls: type[Self] | None
+    yieldIf: YieldIfFunc | None
+    getChild: GetChildFunc
+    readonly: bool
+    setValue: SetValueFunc
+
+
+def dfs[K = int, V = Any, CLS = "sdict"](
     obj: Node[K, V],
     maxDepth=float("inf"),
+    cls: type[CLS] | None = None,
     yieldIf: YieldIfFunc | None = None,
     getChild: GetChildFunc = get_children,
     readonly=False,
+    setValue: SetValueFunc = set_item_attr,
     *,
-    parent: WeakList["sdict"] = WeakList(),
-    keypath: KeyPaths = (),
+    parent: WeakList = WeakList(),
+    keypaths: KeyPaths = (),
     pathCount: PathCount = (0,),
-):
+) -> Generator[CLS]:
     """
     do NOT update scaned/yielded data while iterating.
     Args:
         maxDepth: stop digging if deeper
         yieldIf: yield only if yield_if(self, node) is True
         getChild: see `get_children()`
+        readonly: if True, will
+            - not update sdict's `parent`, `keypath`, `pathCount` if already dfs(sdict)
+            - yield in `sdict.ref`, not `sdict`, keep original Map instance if you want to invoke its method
+            - not substitute {"children": container[...]} to {"children": list[sdict]}
     Usage:
     ```python
-    for v in dfs(myDict):
+    for node in dfs(myDict):
         ...
 
     # if you offen dfs the same dict-object twice or even more, use cache:
@@ -240,71 +308,145 @@ def dfs[K = int, V = Any, KP = str](
     dfs_cache = lru_cache(maxsize=4096)(dfs)
     # if you like some type hint:
     # dfs_cache = copy_args(dfs)(lru_cache(maxsize=4096)(dfs))
-    for v in dfs_cache(myDict):
+    for node in dfs_cache(myDict):
         ...
     ```
     """
     # print(f"{type(obj)=}")
-    if not iterable(obj) or len(keypath) > maxDepth:
+    if not iterable(obj) or len(keypaths) > maxDepth:
         return obj
+    if cls is None:
+        cls = sdict  # type: ignore
 
     pathCount = (*pathCount[:-1], pathCount[-1] + 1)
     if isinstance(obj, sdict) and not readonly:
         # update
-        obj.parent = parent
-        obj.keypath = keypath
+        obj.parents = parent
+        obj.keypaths = keypaths
         obj.pathCount = pathCount
         self = obj
     else:
         data = None
         ref = None
-        if isinstance(obj, Mapping):
+        if isinstance(obj, Mapping) and not readonly:
             data = obj
         else:
             # list / pydantic
             ref = obj
-        self = sdict(
+        # cls = cast(type[sdict], cls)
+        self = cls(  # type: ignore
             data=data,
             ref=ref,
             # deep==True等价于执行dfs()，所以False即可
             deep=False,
             parent=parent,
-            keypath=keypath,
+            keypaths=keypaths,
             pathCount=pathCount,
         )
+    self = cast(sdict, self)
     newSelf = None
     if yieldIf is None or yieldIf(self, obj):
         newSelf = yield self
     if newSelf is not None:
-        if newSelf is NONE:
-            newSelf = None
-        self = cast(sdict, self)
-        # TODO: make sure parent[-1] always latest parent
-        if self.parent:
-            parent = self.parent[-1]
-            lastKey = keypath[-1][-1]
-            parent[lastKey] = newSelf  # TODO: need test
+        self = None if newSelf is NONE else newSelf
     children = getChild(self, obj)
     for i, (k, v) in enumerate(children):
         if not iterable(v):
             continue
         _parent = WeakList((self,))
-        _keypath = (*keypath, [k])
+        _keypaths = (*keypaths, [k])
         _pathCount = (*pathCount, i)
         ret = yield from dfs(
             v,
             maxDepth=maxDepth,
+            cls=cls,
             yieldIf=yieldIf,
             getChild=getChild,
             readonly=readonly,
+            setValue=setValue,
             parent=_parent,
-            keypath=_keypath,
+            keypaths=_keypaths,
             pathCount=_pathCount,
         )
         if not readonly:
             # substitute python dict to sdict
-            self[k] = ret
+            setValue(self, k, ret)  # self[k] = ret
     return self
+
+
+class ddYield(TypedDict):
+    """yield of dictDict()"""
+
+    v: Any
+    self: "sdict"
+    """you should use `if newKey in self` to prevent duplicate key, otherwise `update()` would **overwrite** old value"""
+
+
+def dictDict(
+    gen: Generator, idKey: Any = UNSET, getValue: Callable = get_item_attr_raise
+) -> Generator[ddYield, Hashable, tuple[NestSDict, list[list]]]:
+    """
+    list[dict[list...]] or dict[list[dict...]] to pure nest dict like dict[dict[dict...]].
+    use before `merge()`, because list[dict] is hard to merge correctly(while list[Scalar] or dict[...] is easy)
+
+    ```python
+    for sdic in (idKey := dictDict(dfs(obj), idKey="id")):
+        # will auto update {..., children: [{"id":123},...]} to {..., children: {123:{...}, ...}}
+        # but if not found the idKey, will raise KeyError
+
+    for sdic in (idKey := dictDict(dfs(obj)):
+        if isinstance(sdic.v, MyType):
+            idKey.send("another-IdKey")
+        else:
+            pass # idKey.send(None)
+            # we use `id()` for fallback idKey, or `(id(), counter)` when id() is not unique
+    ```
+
+    Args:
+        obj: dict or list, Map or Iterable
+        idKey: the keyname of unique value in dict. If not found, will yield
+
+    Raises:
+        KeyError: when all idKey is not found
+    """
+    # TODO: record in undoKeys to restore to original data structure for `merge()`
+    undoKeys = []
+
+    def _update(self: sdict, key):
+        if key is None:
+            if idKey is UNSET:
+                key = id(v)
+                if key in self:
+                    raise NotImplementedError(
+                        "rare edge case, click https://github.com/AClon314/jsonc-sdict/issues to report"
+                    )
+            else:
+                key = getValue(v, idKey)
+        elif key is NONE:
+            key = None
+        self.update({key: v})
+        # gen.send(self) # TODO: 似乎执不执行，结果都一样？
+
+    while self := next(gen):
+        if not isinstance(self, sdict):
+            raise TypeError("only support dictDict(gen= dfs(cls=sdict) )")
+        if self.use_ref:
+            if iterable(self.ref):
+                for v in self.ref:
+                    key = yield ddYield(v=v, self=self)
+                    _update(self, key)
+            else:
+                key = yield ddYield(v=self.ref, self=self)
+                _update(self, key)
+            undoKeys.append(list(itertools.product(*self.keypaths))[-1])  # TODO
+            self.use_ref = False
+            self.ref = None
+    return self, undoKeys
+
+
+# ------------------------------------------------------------
+# unref
+# ------------------------------------------------------------
 
 
 def unref(obj, const=False, memo: dict[int, Any] | None = None):
@@ -344,7 +486,7 @@ def unref(obj, const=False, memo: dict[int, Any] | None = None):
     return out_list
 
 
-class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
+class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     """
     search-friendly dict, or "dict design for json in actual business", like benedict, but less limitation, more useful context, more strict type hint.
 
@@ -352,35 +494,34 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         K,V: the current depth that Key,Value's type \n
             当前层级的 Key, Value 键值类型
         R: type of self.ref
-        KP: Type possibilities for all nested depths\n
-            所有嵌套层的类型可能性
     """
 
-    type IterAsMap = Iterable[tuple[K, V]] | Iterable[Iterable[K | V]]
+    type IterAsMap = Iterable[tuple[K, V]]
 
     class _KwargsInit(TypedDict, total=False):
-        data: Mapping[K, V] | None
+        # data: Mapping[K, V] | None
         ref: R | None
         deep: bool
         parent: WeakList[Self]
-        keypath: KeyPaths[KP, Self]
+        keypaths: KeyPaths[Any, Self]
         pathCount: PathCount
         getChild: GetChildFunc
 
     def __init__(
         self,
-        data: Mapping[K, V] | IterAsMap | None = None,
+        data: Mapping[K, V] | IterAsMap | Any | None = None,
         ref: R | None = None,
         *,
         deep=True,
-        parent: WeakList[Self] = WeakList(),
-        keypath: KeyPaths[KP, Self] = (),
+        parents: WeakList[Self] = WeakList(),
+        keypaths: KeyPaths[Any, Self] = (),
         pathCount: PathCount = (0,),
         getChild: GetChildFunc = get_children,
     ):
         """
         Args:
             data: init dictionary, which unpack and create **shallow** copy (👍recommended, full-feature)
+                if is `sdict`, use `deepcopy(mySdict)` or `copy(mySdict)` to keep internal states
             ref: +1 reference\n
                 `sdict(ref=myPydanticModel)` # keep `myPydanticModel` instance's orginal methods\n
                 `s=sdict(ref=ref(hashableObj)); s.ref()` # return **None** after `del hashableObj`\n
@@ -389,6 +530,12 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
             parent: weakref of parent
             getChild: used for __getitem__
         """
+        if isinstance(data, sdict):
+            Log.warning(
+                "{} is sdict, use deepcopy(mySdict) or copy(mySdict) to keep internal states",
+                type(data),
+            )
+
         self.repr = False
         """if you want `{}`, set to False; if you want `sdict({})` truly raw data, set to True"""
         self.use_ref = data is None
@@ -396,8 +543,9 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         super().__init__(data or ())
         self.ref = ref
         """can storage pydantic_model_data, list_data..."""
-        self.parent = parent
-        self.keypath = keypath
+        self.parents = parents
+        self.keypaths = keypaths
+        """from root"""
         self.pathCount = pathCount
         if deep:
             self.rebuild()
@@ -408,28 +556,25 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         """
         for _ in dfs(
             self,
-            parent=self.parent,
-            keypath=self.keypath,
+            parent=self.parents,
+            keypaths=self.keypaths,
             pathCount=self.pathCount,
         ):
             pass
         self.del_cache()
 
-    def del_cache(self):
-        try:
-            del self.height
-        except AttributeError:
-            pass
-            # Log.warning(e)
-        try:
-            del self.childkeys
-        except AttributeError:
-            pass
-            # Log.warning(e)
-        try:
-            del self.unref
-        except AttributeError:
-            pass
+    type _Cached = Literal["height", "childkeys", "unref"]
+
+    def del_cache(self, without: Iterable[_Cached] = ()):
+        todo = self._cached - set(without)
+        for attr in todo:
+            try:
+                delattr(self, attr)
+            except AttributeError:
+                pass
+
+    def __init_subclass__(cls) -> None:
+        cls._cached = set(get_args(cls._Cached))
 
     @property
     def v(self):
@@ -448,6 +593,12 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         """deep unref all `sdict.v`, used for `json.dumps(sd.unref)`"""
         return unref(self.v)
 
+    @staticmethod
+    def is_nestKeys(key: Any) -> TypeGuard[Sequence]:
+        return isinstance(key, Sequence) and not isinstance(
+            key, (str, bytes, bytearray)
+        )
+
     def getitem(
         self,
         key: Iterable[K],
@@ -462,38 +613,26 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         """see `get_item_attr()`"""
         return get_item_attr(self.v, key, default, noRaise)
 
+    @overload
+    def __getitem__(self, key: slice) -> list[Any]: ...
+
+    @overload
+    def __getitem__(self, key: Any) -> Any: ...
+
     def __getitem__(self, key: K | Iterable[K] | slice | Any):
+        """
+        - before rebuild(), return actual value
+        - after rebuild(), return `sdict` that wraps actual value
+        """
         if isinstance(key, slice):
-            return [
-                (
-                    x
-                    if isinstance(x, self.__class__)
-                    else (
-                        self.__class__(x, deep=False)
-                        if isinstance(x, Mapping)
-                        else self.__class__(ref=x, deep=False)
-                        if iterable(x)
-                        else x
-                    )
-                )
-                for x in self.values_flat(slice=key)
-            ]
-        elif self.use_ref or iterable(key) and not isinstance(key, Mapping):
-            # list / tuple
+            v = [x for x in self.values_flat(slice=key)]
+        elif self.use_ref or self.is_nestKeys(key):
+            # key is list / tuple
             v = self.getitem(key, noRaise=())
         else:
             # key = cast(K, key)
             v = super().__getitem__(key)
-
-        if isinstance(v, self.__class__):
-            return v
-        return (
-            self.__class__(v, deep=False)
-            if isinstance(v, Mapping)
-            else self.__class__(ref=v, deep=False)
-            if iterable(v)
-            else v
-        )
+        return v
 
     def setitem(self, key: Sequence[K], value, at=UNSET):
         """see `set_item_attr()`"""
@@ -504,14 +643,25 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
             raise NotImplementedError("TODO")  # TODO: batch
             for i in self.keys_flat(slice=key):
                 self[i] = value
-        elif (
-            self.use_ref
-            or isinstance(key, Sequence)
-            and not isinstance(key, (str, bytes, bytearray))
-        ):
+        elif self.use_ref or self.is_nestKeys(key):
             self.setitem(key, value)
         else:
             super().__setitem__(key, value)
+        self.del_cache()
+
+    def delitem(self, key: Sequence[K], at=UNSET):
+        """see `del_item_attr()`"""
+        return del_item_attr(self.v if at is UNSET else at, key)
+
+    def __delitem__(self, key: K | Sequence[K] | slice | Any):
+        if isinstance(key, slice):
+            raise NotImplementedError("TODO")  # TODO: batch
+            for i in self.keys_flat(slice=key):
+                del self[i]
+        elif self.use_ref or self.is_nestKeys(key):
+            self.delitem(key)
+        else:
+            super().__delitem__(key)
         self.del_cache()
 
     def __hash__(self):
@@ -533,11 +683,6 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         super().__ior__(value)
         self.del_cache()
         return self
-
-    @copy_args(OrderedDict.__delitem__)
-    def __delitem__(self, key):
-        super().__delitem__(key)
-        self.del_cache()
 
     @copy_args(OrderedDict.pop)
     def pop(self, key):
@@ -625,10 +770,10 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
 
         changed = False
         if old is UNSET:
-            if not self.parent or not self.keypath:
+            if not self.parents or not self.keypaths:
                 raise KeyError(new, "not found")
-            parent = self.parent[-1]
-            old = self.keypath[-1][-1]
+            parent = self.parents[-1]
+            old = self.keypaths[-1][-1]
             if not isinstance(parent, MutableMapping):
                 raise TypeError(f"parent must be MutableMapping, got {type(parent)!r}")
             if old not in parent:
@@ -693,7 +838,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
                 plan.append((key, new_name))
             return plan
 
-        def _rename_parent(parent: MutableMapping[Any, Any]) -> bool:
+        def _rename_parent(parent: Self) -> bool:
             if can_rename is not None and not can_rename(parent):
                 return False
             plan = _rename_plan(parent)
@@ -719,188 +864,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
             self.del_cache()
         return self
 
-    @overload
-    def merge(
-        self,
-        new: Mapping | DeepDiff,
-        conflict=None,
-        order: Literal["old", "new"] | None = "old",
-    ) -> Generator[tuple[Any, Any, MutableMapping[Any, Any], Any], Any, Self]: ...
-
-    @overload
-    def merge(
-        self,
-        new: Mapping | DeepDiff,
-        conflict: Literal["old", "new"],
-        order: Literal["old", "new"] | None = "old",
-    ) -> Self: ...
-
-    def merge(
-        self,
-        new: Mapping | DeepDiff,
-        conflict: Literal["old", "new"] | None = None,
-        order: Literal["old", "new"] | None = "old",
-    ) -> Self | Generator[tuple[Any, Any, MutableMapping[Any, Any], Any], Any, Self]:
-        """
-        if new is Map, will auto convert to DeepDiff in inner.
-        *inspired by [deepmerge](https://github.com/toumorokoshi/deepmerge) & [deepdiff](https://github.com/seperman/deepdiff)*
-        ```python
-        for old_v, new_v, parent, key in (gen := jc.merge(new)):
-            gen.send(NEW_V)
-        ```
-
-        Args:
-            conflict: if None, will yield, and you can manually edit `parent[key] = ...`, or `gen.send(New_value) or gen.send(NONE)`
-                if "old", will keep original value
-                if "new", will override New's value
-            order: if set "old", return merged dict in old dict order (respect user's order) \n
-                set to "new" (force program order) \n
-                if set None, will skip re-order, maybe faster.
-
-        ## Yields
-            old_v: old value
-            new_v: new value
-            parent (sdict): old&new_v's parent
-            key: conflict happens when diff value with same key
-
-        ## Send
-            NEW_V: if you don't want to use new_v, you send your wanted value here
-        """
-        if isinstance(new, DeepDiff):
-            new_data = getattr(new, "t2", None)
-            if not isinstance(new_data, Mapping):
-                raise TypeError(f"`New.t2` must be Mapping, got {type(new_data)!r}")
-            diff = new
-        elif isinstance(new, Mapping):
-            new_data = self.__class__(new)
-            diff = DeepDiff(
-                self,
-                new_data,
-                # ignore_order only affect tuple/list, no orderedDict, so we need manually re-sort
-                ignore_order=False,
-                ignore_type_in_groups=[(Mapping, MutableMapping)],
-            )
-        else:
-            raise TypeError(f"`New` must be Mapping or DeepDiff, got {type(new)!r}")
-        if not diff and order != "new":
-            if conflict is not None:
-                return self
-
-        # TODO: cleanup AI code
-        def _reorder(parent_old: MutableMapping, parent_new: Mapping):
-            if order != "new":
-                return
-            ordered_keys = []
-            for k in parent_new.keys():
-                if k in parent_old:
-                    ordered_keys.append(k)
-            for k in parent_old.keys():
-                if k not in parent_new:
-                    ordered_keys.append(k)
-            ordered_items = [(k, parent_old[k]) for k in ordered_keys]
-            parent_old.clear()
-            parent_old.update(ordered_items)
-
-        def _iter_path(change):
-            if change is None:
-                return ()
-            if isinstance(change, Mapping):
-                return change.keys()
-            return change
-
-        def _collapse_path(path: str) -> tuple[Any, ...]:
-            steps = tuple(parse_path(path))
-            merged: list[Any] = []
-            for step in steps:
-                merged.append(step)
-                old_next = self.getitem(merged, default=UNSET)
-                new_next = get_item(
-                    new_data,
-                    merged,
-                    default=UNSET,
-                    noRaise=(KeyError, IndexError, TypeError),
-                )
-                if not (
-                    isinstance(old_next, MutableMapping)
-                    and isinstance(new_next, Mapping)
-                ):
-                    break
-            return tuple(merged)
-
-        add_paths = {
-            _collapse_path(path)
-            for path in _iter_path(diff.get("dictionary_item_added"))
-        }
-        conflict_paths = {
-            _collapse_path(path)
-            for change_type in (
-                "values_changed",
-                "type_changes",
-                "iterable_item_added",
-                "iterable_item_removed",
-                "set_item_added",
-                "set_item_removed",
-                "repetition_change",
-            )
-            for path in _iter_path(diff.get(change_type))
-        }
-        add_paths.discard(())
-        conflict_paths.discard(())
-        changed_prefixes = {
-            path[:i]
-            for path in (*add_paths, *conflict_paths)
-            for i in range(1, len(path) + 1)
-        }
-
-        def _merge_gen(parent_old: MutableMapping, parent_new: Mapping, prefix=()):
-            for key, new_v in parent_new.items():
-                path = (*prefix, key)
-                if (
-                    order != "new"
-                    and path not in changed_prefixes
-                    and key in parent_old
-                ):
-                    continue
-                if key not in parent_old:
-                    parent_old[key] = new_v
-                    continue
-
-                old_v = parent_old[key]
-                if isinstance(old_v, MutableMapping) and isinstance(new_v, Mapping):
-                    if order == "new" or path in changed_prefixes:
-                        yield from _merge_gen(old_v, new_v, path)
-                    continue
-
-                if path not in conflict_paths:
-                    continue
-
-                if conflict == "old":
-                    continue
-                if conflict == "new":
-                    parent_old[key] = new_v
-                    continue
-
-                NEW_V = yield old_v, new_v, parent_old, key
-                if NEW_V is not None:
-                    if NEW_V is NONE:
-                        NEW_V = None
-                    parent_old[key] = NEW_V
-
-            _reorder(parent_old, parent_new)
-
-        gen = _merge_gen(self, new_data)
-        if conflict is not None:
-            for _ in gen:
-                pass
-            self.del_cache()
-            return self
-
-        def _runner():
-            yield from gen
-            self.del_cache()
-            return self
-
-        return _runner()
+    # TODO: merge
 
     def keys_flat(
         self,
@@ -908,7 +872,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         digList=True,
         slice: slice = slice(None),
         getChild: GetChildFunc = get_children,
-        **kwargs,
+        **kwargs: Unpack[_KwargsDfs3],
     ):
         """
         like benedict.keypaths()
@@ -927,7 +891,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         digList=True,
         slice: slice = slice(None),
         getChild: GetChildFunc = get_children,
-        **kwargs,
+        **kwargs: Unpack[_KwargsDfs3],
     ):
         """
         Args:
@@ -945,7 +909,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         digList=True,
         slice: slice = slice(None),
         getChild: GetChildFunc = get_children,
-        **kwargs,
+        **kwargs: Unpack[_KwargsDfs3],
     ):
         """
         Args:
@@ -956,7 +920,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
             getChild = get_children_noList
         for v in self.dfs(maxDepth=maxDepth, getChild=getChild, **kwargs):
             if isinstance(v, self.__class__) and in_range(v.depth, slice):
-                for kp in itertools.product(*v.keypath):
+                for kp in itertools.product(*v.keypaths):
                     yield kp, v  # TODO: need test
 
     def dfs(
@@ -965,17 +929,20 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         yieldIf: YieldIfFunc | None = None,
         getChild: GetChildFunc = get_children,
         readonly=False,
-        **kwargs,
+        setValue=set_item,
+        **kwargs: Unpack[_KwargsDfs3],
     ) -> Generator[Self, Any, Self | Any]:
         """
         see `dfs(**kwargs)`
         """
-        return dfs(
+        return dfs(  # type: ignore
             self.v,
+            cls=self.__class__,  # type: ignore
             maxDepth=maxDepth,
             yieldIf=yieldIf,
             getChild=getChild,
             readonly=readonly,
+            setValue=setValue,
             **kwargs,
         )
 
@@ -985,7 +952,7 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         key: K | UNSET = UNSET,
         index: int | None = None,
         after=False,
-    ):
+    ) -> None:
         """insert the `update` dict before `key` or `index`"""
         if key is UNSET and index is None:
             raise ValueError("key or index must be set")
@@ -1057,9 +1024,17 @@ class sdict[K = str, V = Any, R = Any, KP = Any](OrderedDict[K, V]):
         return list(self.values()).count(value)
 
     @property
+    def keypath(self) -> list:  # TODO list or tuple?
+        return list(itertools.product(*self.keypaths))[-1]
+
+    @property
+    def parent(self):
+        return self.parents[-1] if self.parents else None
+
+    @property
     def depth(self):
         """from root"""
-        return len(self.keypath)  # len(self.pathCount)
+        return len(self.keypaths)  # len(self.pathCount)
 
     @cached_property
     def height(self):

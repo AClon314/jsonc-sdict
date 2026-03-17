@@ -1,4 +1,4 @@
-from jsonc_sdict.share import in_range, valid_len
+from jsonc_sdict.share import in_range, len_slice
 
 
 def test_in_range():
@@ -20,16 +20,17 @@ def test_in_range():
     except ValueError as e:
         assert str(e) == "slice step cannot be zero"
 
+
 def test_valid_len():
     # 测试1：基础正向切片
-    assert valid_len(10, slice(2, 8, 2)) == 3  # [2,4,6] → 长度3
+    assert len_slice(10, slice(2, 8, 2)) == 3  # [2,4,6] → 长度3
     # 测试2：负数索引（修正stop为5，使切片包含索引2、3、4）
-    assert valid_len(5, slice(-3, 5)) == 3  # 索引2,3,4 → 长度3
+    assert len_slice(5, slice(-3, 5)) == 3  # 索引2,3,4 → 长度3
     # 测试3：反向切片
-    assert valid_len(10, slice(8, 2, -2)) == 3  # [8,6,4] → 长度3
+    assert len_slice(10, slice(8, 2, -2)) == 3  # [8,6,4] → 长度3
     # 测试4：超出范围的切片
-    assert valid_len(5, slice(10, 20)) == 0  # 无有效元素 → 长度0
+    assert len_slice(5, slice(10, 20)) == 0  # 无有效元素 → 长度0
     # 测试5：默认切片（取全部）
-    assert valid_len(7, slice(None)) == 7  # 取全部元素 → 长度7
+    assert len_slice(7, slice(None)) == 7  # 取全部元素 → 长度7
     # 测试6：空序列
-    assert valid_len(0, slice(1, 3)) == 0  # 原序列为空 → 长度0
+    assert len_slice(0, slice(1, 3)) == 0  # 原序列为空 → 长度0

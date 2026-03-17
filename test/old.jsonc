@@ -15,7 +15,7 @@
   "8": 8, /* 8 */
   // "9": 9
   "/-node": {
-    "just ignore these": "i am in node comment"
+    "just ignore these": "i am in slash_dash comment"
   },
   "node": {
     "do not ignore me": "i am real data!"

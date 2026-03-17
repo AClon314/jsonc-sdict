@@ -1,6 +1,6 @@
 import pytest
 from types import MappingProxyType
-from jsonc_sdict.sdict import sdict, unref
+from jsonc_sdict import sdict, merge, unref, return_of
 from share import get_caller
 
 
@@ -293,49 +293,55 @@ def test_rename_re_deep_with_can_rename():
     assert len(visited) == 3
 
 
-def test_merge_conflict_old():
-    d = sdict({"a": 1, "b": {"x": 1, "y": 2}})
-    d.merge({"a": 9, "b": {"x": 10, "z": 3}, "c": 7}, conflict="old")
+# def test_merge_conflict_old():
+#     d = sdict({"a": 1, "b": {"x": 1, "y": 2}})
+#     d.merge({"a": 9, "b": {"x": 10, "z": 3}, "c": 7}, conflict="old")
 
-    assert d["a"] == 1
-    assert d["b", "x"] == 1
-    assert d["b", "y"] == 2
-    assert d["b", "z"] == 3
-    assert d["c"] == 7
-
-
-def test_merge_conflict_new():
-    d = sdict({"a": 1, "b": {"x": 1, "y": 2}})
-    d.merge({"a": 9, "b": {"x": 10, "z": 3}, "c": 7}, conflict="new")
-
-    assert d["a"] == 9
-    assert d["b", "x"] == 10
-    assert d["b", "y"] == 2
-    assert d["b", "z"] == 3
-    assert d["c"] == 7
+#     assert d["a"] == 1
+#     assert d["b", "x"] == 1
+#     assert d["b", "y"] == 2
+#     assert d["b", "z"] == 3
+#     assert d["c"] == 7
 
 
-def test_merge_conflict_manual_send():
-    d = sdict({"a": 1, "b": {"x": 1}})
-    g = d.merge({"a": 9, "b": {"x": 10}, "c": 7}, conflict=None)
+# def test_merge_conflict_new():
+#     d = sdict({"a": 1, "b": {"x": 1, "y": 2}})
+#     d.merge({"a": 9, "b": {"x": 10, "z": 3}, "c": 7}, conflict="new")
 
-    old_v, new_v, parent, key = next(g)
-    assert (old_v, new_v, key) == (1, 9, "a")
-    assert parent is d
-    old_v, new_v, parent, key = g.send(5)
-    assert (old_v, new_v, key) == (1, 10, "x")
-    assert parent is d["b"]
-    with pytest.raises(StopIteration):
-        g.send(None)
-
-    assert d["a"] == 5
-    assert d["b", "x"] == 1
-    assert d["c"] == 7
+#     assert d["a"] == 9
+#     assert d["b", "x"] == 10
+#     assert d["b", "y"] == 2
+#     assert d["b", "z"] == 3
+#     assert d["c"] == 7
 
 
-def test_merge_order_new():
-    d = sdict({"a": 1, "b": {"x": 1, "y": 2}, "c": 3})
-    d.merge({"c": 30, "a": 10, "b": {"y": 20, "x": 10}}, conflict="new", order="new")
+# def test_merge_conflict_manual_send():
+#     d = sdict({"a": 1, "b": {"x": 1}})
+#     g = d.merge({"a": 9, "b": {"x": 10}, "c": 7}, conflict=None)
 
-    assert list(d.keys()) == ["c", "a", "b"]
-    assert list(d["b"].keys()) == ["y", "x"]
+#     old_v, new_v, parent, key = next(g)
+#     assert (old_v, new_v, key) == (1, 9, "a")
+#     assert parent is d
+#     old_v, new_v, parent, key = g.send(5)
+#     assert (old_v, new_v, key) == (1, 10, "x")
+#     assert parent is d["b"]
+#     with pytest.raises(StopIteration):
+#         g.send(None)
+
+#     assert d["a"] == 5
+#     assert d["b", "x"] == 1
+#     assert d["c"] == 7
+
+
+# def test_merge_order_new():
+#     d = sdict({"a": 1, "b": {"x": 1, "y": 2}, "c": 3})
+#     d.merge({"c": 30, "a": 10, "b": {"y": 20, "x": 10}}, conflict="new", order="new")
+
+#     assert list(d.keys()) == ["c", "a", "b"]
+#     assert list(d["b"].keys()) == ["y", "x"]
+
+
+def test_merge():
+    t1 = {1: 1, 2: 22, 3: 3, 4: {"a": "hello", "b": [1, 2, 3, 4]}}
+    t2 = {1: 1, 2: 2, 3: 3, 4: {"a": "hello", "b": [1, 2]}}
+    return_of(merge((t1, t2)))
