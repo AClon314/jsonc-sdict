@@ -5,7 +5,7 @@ from types import MappingProxyType
 import os
 import logging
 from collections.abc import Callable, Iterable, Generator
-from typing import cast, Any, ParamSpec, TypeGuard, TypeVar, FrozenSet
+from typing import cast, Any, ParamSpec, TypeIs, TypeVar, FrozenSet, overload
 
 
 type RAISE = "RAISE"  # type:ignore
@@ -30,13 +30,15 @@ def getLogger(name: str | None = None) -> logging.Logger:
     return Log
 
 
-def iterable[V](obj: Iterable[V] | Any) -> TypeGuard[Iterable[V]]:
+def iterable[V](obj: Iterable[V] | Any) -> TypeIs[Iterable[V]]:
     """Iterable but NOT str, bytes"""
     return isinstance(obj, Iterable) and not isinstance(obj, (str, bytes, bytearray))
 
 
 def return_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> R:
     """
+    consume generator and get its return.
+
     Args:
         send: to gen
 
@@ -46,17 +48,36 @@ def return_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> R:
     """
     try:
         try:
-            v = gen.send(send)
+            gen.send(send)
         except TypeError:
-            v = gen.send(None)
+            gen.send(None)
         while True:
-            v = gen.send(send)
+            gen.send(send)
     except StopIteration as e:
         return e.value
 
 
+@overload
+def return_from[Y, S, R](gen: Generator[Y, S, R]) -> Generator[Y, S, R]: ...
+
+
+@overload
+def return_from[R](gen: R) -> Generator[None, None, R]: ...
+
+
+def return_from[Y, S, R](gen: Generator[Y, S, R] | R) -> Generator[Y, S, R]:
+    """usage: `yield from return_from(gen_or_func())`"""
+    if isinstance(gen, Generator):
+        ret: R = yield from gen
+    else:
+        ret = gen
+    return ret
+
+
 def yields_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> tuple[list[Y], R]:
     """
+    consume generator and get its yields.
+
     Args:
         send: to gen
 

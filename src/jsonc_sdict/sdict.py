@@ -2,6 +2,8 @@
 super dict, signal dict...
 """
 
+from dataclasses import dataclass
+
 import re
 import itertools
 from weakref import ref
@@ -17,7 +19,7 @@ from typing import (
     Unpack,
     Literal,
     TypedDict,
-    TypeGuard,
+    TypeIs,
 )
 from collections.abc import (
     Callable,
@@ -29,10 +31,16 @@ from collections.abc import (
     Sequence,
 )
 
-from deepdiff import DeepDiff
-from deepdiff.path import parse_path
 
-from jsonc_sdict.share import UNSET, NONE, copy_args, iterable, in_range, getLogger
+from jsonc_sdict.share import (
+    UNSET,
+    RAISE,
+    NONE,
+    copy_args,
+    iterable,
+    in_range,
+    getLogger,
+)
 from jsonc_sdict.weakList import WeakList
 
 type Key[K = Any, V = sdict] = K | int
@@ -64,7 +72,7 @@ Log = getLogger(__name__)
 def get_item[K, D](
     obj: NestMutMap[K],
     keys: Iterable[K],
-    default: D = None,
+    default: D = RAISE,
     noRaise: tuple[type[BaseException], ...] = (KeyError, IndexError, TypeError),
 ) -> Any | D:
     """
@@ -77,6 +85,8 @@ def get_item[K, D](
             can use `(Exception,)` to suppress all Exceptions,\n
             or use `()` to raise all Exceptions
     """
+    if default is RAISE:
+        noRaise = ()
     if not iterable(keys):
         return obj[keys]  # type: ignore
     try:
@@ -92,7 +102,7 @@ def get_item[K, D](
 def get_attr[D](
     obj,
     keys: Iterable[str],
-    default: D = None,
+    default: D = RAISE,
     noRaise: tuple[type[BaseException], ...] = (AttributeError,),
 ) -> Any | D:
     """
@@ -105,6 +115,8 @@ def get_attr[D](
             can use `(Exception,)` to suppress all Exceptions,\n
             or use `()` to raise all Exceptions
     """
+    if default is RAISE:
+        noRaise = ()
     if not iterable(keys):
         return getattr(obj, keys)  # type: ignore
     try:
@@ -120,7 +132,7 @@ def get_attr[D](
 def get_item_attr[D](
     obj,
     keys: Iterable,
-    default: D = None,
+    default: D = RAISE,
     noRaise: tuple[type[BaseException], ...] = (
         KeyError,
         IndexError,
@@ -139,6 +151,8 @@ def get_item_attr[D](
             can use `(Exception,)` to suppress all Exceptions,\n
             or use `()` to raise all Exceptions
     """
+    if default is RAISE:
+        noRaise = ()
     if not iterable(keys):
         if hasattr(obj, "__getitem__"):
             return obj[keys]
@@ -157,16 +171,6 @@ def get_item_attr[D](
         raise
 
 
-def get_item_raise(obj, keys: Iterable) -> Any:
-    """see `get_item()`"""
-    return get_item(obj, keys, noRaise=())
-
-
-def get_item_attr_raise(obj, keys: Iterable):
-    """see `get_item_attr()`"""
-    return get_item_attr(obj, keys, noRaise=())
-
-
 def set_item_attr(obj, keys: Sequence, value) -> None:
     """
     **smartly** access nested obj like `obj[key0].key1...`\n
@@ -181,7 +185,7 @@ def set_item_attr(obj, keys: Sequence, value) -> None:
         else:
             setattr(obj, keys, value)
         return
-    parent = get_item_attr(obj, keys[:-1], noRaise=())
+    parent = get_item_attr(obj, keys[:-1])
     k = keys[-1]
     if hasattr(obj, "__setitem__"):
         parent[k] = value  # type: ignore
@@ -191,7 +195,7 @@ def set_item_attr(obj, keys: Sequence, value) -> None:
 
 def set_item(obj, keys: Sequence, value) -> None:
     """see `get_item()` & `get_item_attr()`"""
-    parent = get_item(obj, keys[:-1], noRaise=())
+    parent = get_item(obj, keys[:-1])
     parent[keys[-1]] = value  # type: ignore
 
 
@@ -203,16 +207,17 @@ def del_item_attr(obj, keys: Sequence) -> None:
         else:
             delattr(obj, keys)
         return
-    parent = get_item_attr(obj, keys[:-1], noRaise=())
+    parent = get_item_attr(obj, keys[:-1])
     k = keys[-1]
     if hasattr(obj, "__delitem__"):
         del parent[k]  # type: ignore
     else:
         delattr(parent, k)
 
+
 def del_item(obj, keys: Sequence) -> None:
     """see `set_item_attr()`"""
-    parent = get_item(obj, keys[:-1], noRaise=())
+    parent = get_item(obj, keys[:-1])
     del parent[keys[-1]]  # type: ignore
 
 
@@ -374,7 +379,8 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     return self
 
 
-class ddYield(TypedDict):
+@dataclass
+class ddYield:
     """yield of dictDict()"""
 
     v: Any
@@ -382,9 +388,18 @@ class ddYield(TypedDict):
     """you should use `if newKey in self` to prevent duplicate key, otherwise `update()` would **overwrite** old value"""
 
 
+class KwargsDictDict(TypedDict, total=False):
+    idKey: Any
+    """idKey: the keyname of unique value in dict. If not found, will raise"""
+    getValue: Callable[[Any, Any], Any]
+    """getValue(current_dict, idKey): get idKey of dict"""
+
+
 def dictDict(
-    gen: Generator, idKey: Any = UNSET, getValue: Callable = get_item_attr_raise
-) -> Generator[ddYield, Hashable, tuple[NestSDict, list[list]]]:
+    gen: Generator,
+    idKey: Any = UNSET,
+    getValue: Callable[[Any, Any], Any] = get_item_attr,
+) -> Generator[ddYield, Hashable, tuple[NestSDict, list[tuple]]]:
     """
     list[dict[list...]] or dict[list[dict...]] to pure nest dict like dict[dict[dict...]].
     use before `merge()`, because list[dict] is hard to merge correctly(while list[Scalar] or dict[...] is easy)
@@ -404,7 +419,8 @@ def dictDict(
 
     Args:
         obj: dict or list, Map or Iterable
-        idKey: the keyname of unique value in dict. If not found, will yield
+        idKey: the keyname of unique value in dict. If not found, will raise
+        getValue(current_dict, idKey): get idKey of dict
 
     Raises:
         KeyError: when all idKey is not found
@@ -412,8 +428,11 @@ def dictDict(
     # TODO: record in undoKeys to restore to original data structure for `merge()`
     undoKeys = []
 
-    def _update(self: sdict, key):
-        if key is None:
+    def _yield(self: sdict, v):
+        key = yield ddYield(v=v, self=self)
+        if key is NONE:
+            key = None
+        elif key is None:
             if idKey is UNSET:
                 key = id(v)
                 if key in self:
@@ -422,8 +441,6 @@ def dictDict(
                     )
             else:
                 key = getValue(v, idKey)
-        elif key is NONE:
-            key = None
         self.update({key: v})
         # gen.send(self) # TODO: 似乎执不执行，结果都一样？
 
@@ -433,12 +450,11 @@ def dictDict(
         if self.use_ref:
             if iterable(self.ref):
                 for v in self.ref:
-                    key = yield ddYield(v=v, self=self)
-                    _update(self, key)
+                    yield from _yield(self, v)
             else:
-                key = yield ddYield(v=self.ref, self=self)
-                _update(self, key)
-            undoKeys.append(list(itertools.product(*self.keypaths))[-1])  # TODO
+                yield from _yield(self, self.ref)
+            undoKeys.append(self.keypath)  # TODO
+            # undoKeys.append(list(itertools.product(*self.keypaths))[-1])  # TODO
             self.use_ref = False
             self.ref = None
     return self, undoKeys
@@ -594,7 +610,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         return unref(self.v)
 
     @staticmethod
-    def is_nestKeys(key: Any) -> TypeGuard[Sequence]:
+    def is_nestKeys(key: Any) -> TypeIs[Sequence]:
         return isinstance(key, Sequence) and not isinstance(
             key, (str, bytes, bytearray)
         )
@@ -628,7 +644,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             v = [x for x in self.values_flat(slice=key)]
         elif self.use_ref or self.is_nestKeys(key):
             # key is list / tuple
-            v = self.getitem(key, noRaise=())
+            v = self.getitem(key)
         else:
             # key = cast(K, key)
             v = super().__getitem__(key)
@@ -1024,7 +1040,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         return list(self.values()).count(value)
 
     @property
-    def keypath(self) -> list:  # TODO list or tuple?
+    def keypath(self) -> tuple:  # TODO list or tuple?
         return list(itertools.product(*self.keypaths))[-1]
 
     @property
