@@ -16,6 +16,7 @@ from typing import (
     TypeIs,
     Literal,
     Callable,
+    Protocol,
     FrozenSet,
 )
 from collections.abc import (
@@ -133,7 +134,7 @@ class DeepDiff[T1, T2 = T1](_DeepDiff):
 
 
 @runtime_checkable
-class DeepDiffProtocol(_DeepDiffProtocol): ...
+class DeepDiffProtocol(_DeepDiffProtocol, Protocol): ...
 
 
 class merge[T]:

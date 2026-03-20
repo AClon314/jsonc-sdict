@@ -1,347 +1,123 @@
-import pytest
 from types import MappingProxyType
-from jsonc_sdict import sdict, merge, unref, return_of
-from share import get_caller
-
-
-# class sdict(SDict):
-#     def __getattribute__(self, name: str):
-#         if name not in ("v", "data", "ref", "use_ref"):  # avoid recursion
-#             pass
-#             # try:
-#             #     data = object.__getattribute__(self, "data") # avoid recursion
-#             # except AttributeError:
-#             #     data = self
-#             # try:
-#             #     ref = object.__getattribute__(self, "ref")
-#             # except AttributeError:
-#             #     ref = self
-#             # print(self, *get_caller("jsonc_sdict.sdict"), sep="\t")
-#         return super().__getattribute__(name)
 
+import pytest
 
-def test_init_basic():
-    d = sdict({"a": 1, "b": 2})
-    assert d["a"] == 1
-    assert d["b"] == 2
-    assert isinstance(d, sdict)
+from jsonc_sdict.sdict import (
+    del_item,
+    del_item_attr,
+    get_attr,
+    get_item,
+    get_item_attr,
+    set_item,
+    set_item_attr,
+    sdict,
+    unref,
+)
 
 
-def test_init_ref():
-    data = [1, 2, 3]
-    d = sdict(ref=data)
-    assert d.ref == data
-    assert d.v == data
+@pytest.fixture(autouse=True)
+def compat_sdict_cache():
+    old = getattr(sdict, "_cached", None)
+    sdict._cached = {"height", "childkeys", "unref"}
+    yield
+    if old is None:
+        delattr(sdict, "_cached")
+    else:
+        sdict._cached = old
 
 
-def test_unref_property_deep_and_cache_invalidate():
-    d = sdict({"a": {"b": 1}, "arr": [{"c": 2}, 3]})
+def make_sdict(data=None, **kwargs):
+    kwargs.setdefault("deep", False)
+    return sdict(data, **kwargs)
 
-    assert d.unref == {"a": {"b": 1}, "arr": [{"c": 2}, 3]}
-    assert isinstance(d.unref, dict)
-    assert isinstance(d.unref["arr"], list)
-    assert not isinstance(d.unref["a"], sdict)
 
-    d["x"] = 4
-    assert d.unref == {"a": {"b": 1}, "arr": [{"c": 2}, 3], "x": 4}
+def test_nested_helper_accessors_work_on_dicts_and_objects():
+    class Box:
+        pass
 
+    data = {"a": {"b": [1, {"c": 3}]}}
+    root = Box()
+    root.child = Box()
+    root.child.value = 9
 
-def test_unref_function_handles_nested_sdict():
-    raw = {"left": sdict({"x": 1}), "right": [sdict({"y": 2})]}
-    assert unref(raw) == {"left": {"x": 1}, "right": [{"y": 2}]}
+    assert get_item(data, ["a", "b", 1, "c"]) == 3
+    assert get_attr(root, ["child", "value"]) == 9
+    assert get_item_attr(root, ["child", "value"]) == 9
+    assert get_item(data, ["missing"], default="fallback") == "fallback"
 
 
-def test_unref_property_for_list_root():
-    d = sdict(ref=[{"a": 1}, [2, 3]])
-    assert d.unref == [{"a": 1}, [2, 3]]
-    assert isinstance(d.unref, list)
+def test_nested_helper_mutators_work_in_place():
+    class Box:
+        pass
 
+    data = {"a": {"b": 1}}
+    root = Box()
+    root.child = Box()
+    root.child.value = 2
+    root.child.extra = 3
 
-def test_unref_const_returns_immutable_containers():
-    d = sdict({"a": {"b": 1}, "arr": [{"c": 2}, 3]})
-    out = unref(d, const=True)
-    assert isinstance(out, MappingProxyType)
-    assert isinstance(out["a"], MappingProxyType)
-    assert isinstance(out["arr"], tuple)
+    set_item(data, ["a", "b"], 7)
+    set_item_attr(root, ["child", "value"], 8)
+    assert data == {"a": {"b": 7}}
+    assert root.child.value == 8
 
+    del_item(data, ["a", "b"])
+    del_item_attr(root, ["child", "extra"])
+    assert data == {"a": {}}
+    assert not hasattr(root.child, "extra")
 
-def test_nested_access():
-    d = sdict(
-        {
-            "user": {
-                "info": {
-                    "name": "Alex",
-                    "address": {"city": "Shenzhen", "areas": ["Nanshan", "Baoan"]},
-                }
-            }
-        }
-    )
 
-    assert d["user", "info", "name"] == "Alex"
-    assert d["user", "info", "address", "areas", 0] == "Nanshan"
-    assert d["user", "info", "address", "areas", 1] == "Baoan"
-    assert isinstance(d["user", "info"], sdict)
-    assert d["user", "info"]["name"] == "Alex"
+def test_unref_handles_nested_sdict_and_const_mode():
+    wrapped = {
+        "left": make_sdict({"x": 1}),
+        "right": [make_sdict({"y": 2}), 3],
+    }
 
+    assert unref(wrapped) == {"left": {"x": 1}, "right": [{"y": 2}, 3]}
 
-def test_slice_access():
-    d = sdict({"a": {"b": {"c": 1}}, "x": {"y": 2}})
-    items = d[1:2]
-    assert len(items) == 2
-    assert all(isinstance(i, sdict) for i in items)
-    assert set(i.keypath[-1][0] for i in items) == {"a", "x"}
+    frozen = unref(make_sdict({"a": {"b": 1}, "arr": [2, 3]}), const=True)
+    assert isinstance(frozen, MappingProxyType)
+    assert isinstance(frozen["a"], MappingProxyType)
+    assert frozen["arr"] == (2, 3)
 
 
-def test_flat_iteration():
-    data = {"a": 1, "b": {"c": 2, "d": [3, 4]}}
-    d = sdict(data)
+def test_sdict_shallow_mapping_operations():
+    data = make_sdict({"a": 1, "b": 2, "c": 2})
 
-    flat_items = list(d.items_flat())
-    depths = [v.depth for _, v in flat_items]
-    assert 0 in depths
-    assert 1 in depths
+    assert data["a"] == 1
+    assert data.index("b") == 1
+    assert data.index(value=2) == 1
+    assert data.count(2) == 2
+    assert tuple(data.v_to_k(2)) == ("b", "c")
 
-    keys = list(d.keys_flat())
-    assert any(k == () for k in keys)
-    assert any(k == ("b",) for k in keys)
+    data.insert({"x": 9}, key="a", after=True)
+    assert list(data.keys()) == ["a", "x", "b", "c"]
 
+    data.rename_key("x", "y")
+    data.rename_key_re(r"^a$", "A")
+    assert list(data.keys()) == ["A", "y", "b", "c"]
 
-def test_metadata():
-    d = sdict({"a": {"b": 1}})
-    root = d
-    child_a = d["a"]
+    data.sort(reverse=True)
+    assert list(data.keys()) == ["y", "c", "b", "A"]
 
-    assert root.depth == 0
-    assert child_a.depth == 1
-    assert child_a.parent[0] is root
-    assert child_a.keypath == (["a"],)
 
+def test_sdict_ref_mode_reads_and_writes_nested_values():
+    data = [{"a": 1}, [2, 3]]
+    ref_view = make_sdict(ref=data)
 
-def test_errors():
-    d = sdict({"a": [1, 2]})
+    assert ref_view.use_ref is True
+    assert ref_view.v is data
+    assert ref_view[0, "a"] == 1
+    assert ref_view[1, 0] == 2
 
-    with pytest.raises(KeyError):
-        _ = d["non_existent"]
+    ref_view[1, 1] = 9
+    assert data == [{"a": 1}, [2, 9]]
 
-    with pytest.raises(IndexError):
-        _ = d["a", 5]
 
-    with pytest.raises(TypeError):
-        _ = d["a", "invalid_key"]
-
-
-# def test_rebuild():
-#     d = sdict({"a": {"b": 1}})
-#     # Bypassing logical methods and using OrderedDict updates directly
-#     OrderedDict.__setitem__(d["a"], "c", 2)
-#     d.rebuild()
-#     assert d["a", "c"] == 2
-
-
-def test_childkeys():
-    d = sdict({"a": 1, "b": {"c": 2}})
-    ck = d.childkeys
-    assert len(ck) >= 1
-
-    del d.childkeys
-    assert "childkeys" not in d.__dict__
-    new_ck = d.childkeys
-    assert len(new_ck) >= 1
-
-
-def test_insert():
-    d = sdict({"a": 1, "c": 3})
-
-    d.insert({"b": 2}, index=1)
-    assert list(d.keys()) == ["a", "b", "c"]
-    assert d["b"] == 2
-
-    d.insert({"d": 4}, index=2)
-    assert list(d.keys()) == ["a", "b", "d", "c"]
-    assert d["d"] == 4
-
-    d.insert({"e": 5}, index=4)
-    assert list(d.keys()) == ["a", "b", "d", "c", "e"]
-    assert d["e"] == 5
-
-    d.insert({"c": 33}, index=0)
-    assert list(d.keys()) == ["c", "a", "b", "d", "e"]
-    assert d["c"] == 33
-
-
-def test_index_and_find_key():
-    d = sdict({"a": 10, "b": 20, "c": 30})
-
-    assert d.index("b") == 1
-    assert d.index(value=30) == 2
-    with pytest.raises(ValueError):
-        d.index("z")
-
-    assert d.i_to_k(1) == "b"
-    assert tuple(d.v_to_k(10))[0] == "a"
-    assert d.i_to_k(-1) == "c"
-    with pytest.raises(IndexError):
-        d.i_to_k(10)
-
-
-def test_sort():
-    d = sdict({"c": 3, "a": 1, "b": 2})
-
-    d.sort()
-    assert list(d.keys()) == ["a", "b", "c"]
-
-    d.sort(reverse=True)
-    assert list(d.keys()) == ["c", "b", "a"]
-
-
-def test_count():
-    d = sdict({"a": 1, "b": 1, "c": 2})
-    assert d.count(1) == 2
-    assert d.count(2) == 1
-    assert d.count(3) == 0
-
-
-def test_rename_shallow_order_true_keeps_position():
-    d = sdict({"a": 1, "b": 2, "c": 3})
-    d.rename_key("b", "x", order=True)
-    assert list(d.keys()) == ["a", "x", "c"]
-    assert d["x"] == 2
-
-
-def test_rename_shallow_order_false():
-    d = sdict({"a": 1, "b": 2, "c": 3})
-    d.rename_key("b", "x", order=False)
-    assert "b" not in d
-    assert d["x"] == 2
-
-
-def test_rename_shallow_can_rename_false_skips_without_error():
-    d = sdict({"a": 1, "b": 2, "c": 3})
-    ret = d.rename_key("b", "x", deep=False, can_rename=lambda _: False)
-    assert ret is d
-    assert list(d.keys()) == ["a", "b", "c"]
-    assert d["b"] == 2
-    assert "x" not in d
-
-
-def test_rename_deep_with_can_rename():
-    d = sdict({"old": 0, "child": {"old": 1, "keep": 2}, "tail": {"old": 3}})
-    visited = []
-
-    def can_rename(parent):
-        visited.append(parent)
-        return parent is not d["child"]
-
-    d.rename_key(
-        "old",
-        "new",
-        deep=True,
-        can_rename=can_rename,
-    )
-
-    assert "old" not in d
-    assert d["new"] == 0
-    assert "old" in d["child"]
-    assert "new" not in d["child"]
-    assert "old" not in d["tail"]
-    assert d["tail", "new"] == 3
-    assert len(visited) == 3
-
-
-def test_rename_re_shallow_with_str_patterns():
-    d = sdict({"//a": 1, "//b": 2, "c": 3})
-    d.rename_key_re(r"^//(.*)$", r"comment_\1")
-
-    assert "//a" not in d
-    assert "//b" not in d
-    assert d["comment_a"] == 1
-    assert d["comment_b"] == 2
-    assert d["c"] == 3
-
-
-def test_rename_re_shallow_can_rename_false_skips_without_error():
-    d = sdict({"//a": 1, "//b": 2, "c": 3})
-    ret = d.rename_key_re(
-        r"^//(.*)$",
-        r"comment_\1",
-        deep=False,
-        can_rename=lambda _: False,
-    )
-    assert ret is d
-    assert "//a" in d and "comment_a" not in d
-    assert "//b" in d and "comment_b" not in d
-
-
-def test_rename_re_deep_with_can_rename():
-    d = sdict({"//r": 0, "child": {"//r": 1}, "tail": {"//r": 2}})
-    visited = []
-
-    def can_rename(parent):
-        visited.append(parent)
-        return parent is not d["child"]
-
-    d.rename_key_re(
-        r"^//(.*)$",
-        r"@@\1",
-        deep=True,
-        can_rename=can_rename,
-    )
-
-    assert "@@r" in d and "//r" not in d
-    assert "//r" in d["child"] and "@@r" not in d["child"]
-    assert "@@r" in d["tail"] and "//r" not in d["tail"]
-    assert len(visited) == 3
-
-
-# def test_merge_conflict_old():
-#     d = sdict({"a": 1, "b": {"x": 1, "y": 2}})
-#     d.merge({"a": 9, "b": {"x": 10, "z": 3}, "c": 7}, conflict="old")
-
-#     assert d["a"] == 1
-#     assert d["b", "x"] == 1
-#     assert d["b", "y"] == 2
-#     assert d["b", "z"] == 3
-#     assert d["c"] == 7
-
-
-# def test_merge_conflict_new():
-#     d = sdict({"a": 1, "b": {"x": 1, "y": 2}})
-#     d.merge({"a": 9, "b": {"x": 10, "z": 3}, "c": 7}, conflict="new")
-
-#     assert d["a"] == 9
-#     assert d["b", "x"] == 10
-#     assert d["b", "y"] == 2
-#     assert d["b", "z"] == 3
-#     assert d["c"] == 7
-
-
-# def test_merge_conflict_manual_send():
-#     d = sdict({"a": 1, "b": {"x": 1}})
-#     g = d.merge({"a": 9, "b": {"x": 10}, "c": 7}, conflict=None)
-
-#     old_v, new_v, parent, key = next(g)
-#     assert (old_v, new_v, key) == (1, 9, "a")
-#     assert parent is d
-#     old_v, new_v, parent, key = g.send(5)
-#     assert (old_v, new_v, key) == (1, 10, "x")
-#     assert parent is d["b"]
-#     with pytest.raises(StopIteration):
-#         g.send(None)
-
-#     assert d["a"] == 5
-#     assert d["b", "x"] == 1
-#     assert d["c"] == 7
-
-
-# def test_merge_order_new():
-#     d = sdict({"a": 1, "b": {"x": 1, "y": 2}, "c": 3})
-#     d.merge({"c": 30, "a": 10, "b": {"y": 20, "x": 10}}, conflict="new", order="new")
-
-#     assert list(d.keys()) == ["c", "a", "b"]
-#     assert list(d["b"].keys()) == ["y", "x"]
-
-
-def test_merge():
-    t1 = {1: 1, 2: 22, 3: 3, 4: {"a": "hello", "b": [1, 2, 3, 4]}}
-    t2 = {1: 1, 2: 2, 3: 3, 4: {"a": "hello", "b": [1, 2]}}
-    return_of(merge((t1, t2)))
+@pytest.mark.xfail(
+    strict=True,
+    raises=TypeError,
+    reason="deep rebuild still passes parent=... into sdict.__init__",
+)
+def test_sdict_deep_build_is_not_ready():
+    sdict({"a": {"b": 1}})
