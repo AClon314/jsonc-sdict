@@ -40,17 +40,14 @@ def return_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> R:
     consume generator and get its return.
 
     Args:
-        send: to gen
+        send: value sent after the first yield. `None` matches `for _ in gen`.
 
     Raises:
         GeneratorExit
         MemoryError
     """
     try:
-        try:
-            gen.send(send)
-        except TypeError:
-            gen.send(None)
+        next(gen)
         while True:
             gen.send(send)
     except StopIteration as e:
@@ -90,10 +87,7 @@ def yields_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> tuple[list[Y]
     """
     yields: list[Y] = []
     try:
-        try:
-            v = gen.send(send)
-        except TypeError:
-            v = gen.send(None)
+        v = next(gen)
         yields.append(v)
         while True:
             v = gen.send(send)

@@ -1,3 +1,5 @@
+import pytest
+
 from jsonc_sdict.share import in_range, len_slice, return_of, yields_of
 
 
@@ -9,6 +11,18 @@ def test_return_helpers_consume_generators():
 
     assert yields_of(gen()) == (["a", "b"], "done")
     assert return_of(gen()) == "done"
+
+
+def test_return_helpers_do_not_swallow_inner_type_error():
+    def gen():
+        raise TypeError("inner boom")
+        yield
+
+    with pytest.raises(TypeError, match="inner boom"):
+        return_of(gen())
+
+    with pytest.raises(TypeError, match="inner boom"):
+        yields_of(gen())
 
 
 def test_in_range():
