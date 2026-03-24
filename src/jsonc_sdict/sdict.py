@@ -474,7 +474,7 @@ def unref(obj, const=False, memo: dict[int, Any] | None = None):
     if memo is None:
         memo = {}
     value = obj.v if isinstance(obj, sdict) else obj
-    if not (isinstance(value, Mapping) or iterable(value)):
+    if not iterable(value):
         return value
 
     obj_id = id(value)

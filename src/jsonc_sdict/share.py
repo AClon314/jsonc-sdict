@@ -4,7 +4,7 @@ from types import MappingProxyType
 
 import os
 import logging
-from collections.abc import Callable, Iterable, Generator
+from collections.abc import Callable, Iterable, Generator, Mapping
 from typing import cast, Any, ParamSpec, TypeIs, TypeVar, FrozenSet, overload
 
 
@@ -16,6 +16,7 @@ type NONE = "NONE"  # type: ignore
 """gen.send(NONE) to give None as new value"""
 Scalar = None | bool | int | float | str | bytes | bytearray
 ImmutableContainers = tuple | MappingProxyType | FrozenSet
+PS = ParamSpec("PS")
 
 LOG = os.environ.get("LOG", "INFO").upper()
 IS_DEBUG = LOG == "DEBUG" or os.environ.get("TERM_PROGRAM", None)
@@ -33,6 +34,48 @@ def getLogger(name: str | None = None) -> logging.Logger:
 def iterable[V](obj: Iterable[V] | Any) -> TypeIs[Iterable[V]]:
     """Iterable but NOT str, bytes"""
     return isinstance(obj, Iterable) and not isinstance(obj, (str, bytes, bytearray))
+
+
+def iterableButNotMap[V](obj: Iterable[V] | Any) -> TypeIs[Iterable[V]]:
+    """Iterable[V] but NOT Mapping[K,V]"""
+    return isinstance(obj, Iterable) and not isinstance(
+        obj, (str, bytes, bytearray, Mapping)
+    )
+
+
+def isFlatIterable[V](obj: Iterable[V] | Any) -> TypeIs[Iterable[V]]:
+    """[0,1,"s"] return True; [0, {...}, [...]] return False"""
+    return iterableButNotMap(obj) and not any(iterableButNotMap(x) for x in obj)
+
+
+@overload
+def unpack_method[T, R](
+    deco: classmethod[T, PS, R], cls: type[T]
+) -> Callable[PS, R]: ...
+
+
+@overload
+def unpack_method[R](deco: staticmethod[PS, R]) -> Callable[PS, R]: ...
+
+
+@overload
+def unpack_method[R](deco: Callable[PS, R]) -> Callable[PS, R]: ...
+
+
+@overload
+def unpack_method(deco: Any) -> None: ...
+
+
+def unpack_method(
+    deco: classmethod | staticmethod, cls: type | None = None
+) -> Callable | None:
+    if isinstance(deco, classmethod):
+        return deco.__get__(None, cls)
+    elif isinstance(deco, staticmethod):
+        return deco.__get__(None, None)
+    elif isinstance(deco, Callable):
+        return deco
+    return None
 
 
 def return_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> R:
