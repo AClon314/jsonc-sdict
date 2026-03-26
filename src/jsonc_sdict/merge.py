@@ -2,13 +2,12 @@
 merge & preset
 """
 
-from deepdiff.operator import BaseOperator
+from deepdiff.helper import NotPresent
 
 from functools import cached_property
 from types import MappingProxyType
 from typing import (
     cast,
-    get_args,
     overload,
     runtime_checkable,
     Any,
@@ -21,8 +20,9 @@ from typing import (
     Protocol,
     FrozenSet,
 )
+from typing_extensions import TypedDict
+
 from collections.abc import (
-    Set,
     Mapping,
     Iterable,
     Generator,
@@ -33,6 +33,7 @@ from collections.abc import (
 
 from deepdiff import DeepDiff as _DeepDiff
 from deepdiff.diff import DeepDiffProtocol as _DeepDiffProtocol
+from deepdiff.operator import BaseOperator
 
 from jsonc_sdict.share import (
     NONE,
@@ -44,7 +45,6 @@ from jsonc_sdict.share import (
     return_from,
     isFlatIterable,
     unpack_method,
-    isMethod,
 )
 from jsonc_sdict.sdict import (
     dfs,
@@ -110,6 +110,10 @@ def isType(obj, types: IsType) -> bool:
     return isinstance(obj, types) if isinstance(types, (type, tuple)) else types(obj)
 
 
+def isNotPresent(obj):
+    return isinstance(obj, NotPresent)
+
+
 type DiffReportType = Literal[
     "values_changed",
     "type_changes",  # 类型改变
@@ -143,8 +147,10 @@ class DeepDiffProtocol(_DeepDiffProtocol, Protocol): ...
 
 
 class merge[T]:
-    """preset for `auto` arg
-    🎃 Issue/Pull Request welcome! share your preset! 👻 \n
+    """
+    ## Developer says
+    - `root` would always the latest data, `node` would always the initial data.
+    - 🎃 Issue/Pull Request welcome! share your preset! 👻 \n
     创建Issue或PR来分享你的预设，帮助大家节省时间!
     """
 
@@ -155,7 +161,7 @@ class merge[T]:
     HookFunc = Callable[[DeepDiff, DeepDiff], _FuncOrGen]
     """`func = cast(merge.Func, func)`"""
     AutoDict = dict[IsType, MergeOrder | MergeEnd | _HookFunc]
-    """`{dict: "del", (MyMap, sdict): "", lambda obj:isinstance(obj,Sequence) and not isinstance(obj,(str,bytes)): "old"}`"""
+    """`{dict: "del", (mergeable_type, sdict): "", lambda obj:isinstance(obj,Sequence) and not isinstance(obj,(str,bytes)): "old"}`"""
     type HookKey = DiffReportType | Literal["else"]
     type HookValue = tuple[_HookFunc, ...] | MergeEnd
     type Hook = dict[HookKey, HookValue]
@@ -188,23 +194,24 @@ class merge[T]:
             value: by default use `t2`(new)
         """
         v = cls.get_item(root.t2, node) if value is UNSET else value
-        set_item_attr(root.t1, node.keypath, v)
-        # read the original __class__, we only edit root, not node
-        # node.t1 = v
+        return set_item_attr(root.t1, node.keypath, v)
 
     @classmethod
     def del_item(cls, root: DeepDiff, node: DeepDiff):
-        if cls.get_item(root.t1, node):
-            del_item_attr(root.t1, node.keypath)
-        else:
-            Log.debug("⚠ Del but not existed: %s", node.keypath)
+        """
+        Args:
+            root: `root.t1`/`root.t2`. if `root` then fallback to `root.t1`(old)
+        """
+        if isinstance(root, DeepDiffProtocol):
+            root = root.t1
+        return del_item_attr(root, node.keypath)
 
     auto_old_new: AutoDict = {Mapping: "old,new-^", iterable: "old,new-^"}
     auto_new_old: AutoDict = {Mapping: "old,new-^", iterable: "new,old-^"}
 
     @classmethod
     def hook_keepInitClass(cls, root: DeepDiff, node: DeepDiff, **env) -> None:
-        """`node.t1.__class__(cls.get_item(root, node))`"""
+        """`node.t1.__class__(cls.get_item(root, node))`, the initClass should accepct data as first positional arg"""
         Cls = node.t1.__class__
         now = cls.get_item(root, node)
         cls.set_item(root, node, Cls(now))
@@ -251,6 +258,7 @@ class merge[T]:
         eg-allList: old={"same": [...]}, new={"same": [...]}
         eg-allDict: old={"same": {...}}, new={"same": {...}}
         """
+        env = {**env, "diffType": diffType}
         if diffType is RAISE:
             raise ValueError("need `diffType` keyword arg")
         t1 = node.t1
@@ -261,7 +269,7 @@ class merge[T]:
             # so give up and give control to next hook(usually `hook_auto`)
             return
         if sameKey_diffValue == "yield":
-            yield from cls.yield_set(root, node)
+            yield from cls.yield_set(root, node, env)
         elif sameKey_diffValue == "del":
             cls.del_item(root, node)
         elif sameKey_diffValue == "old":
@@ -278,54 +286,55 @@ class merge[T]:
         diffType: DiffReportType | RAISE = RAISE,
         **env,
     ):
-        """deepdiff report "values_changed" while dictA has no intersection with dictB"""
+        """
+        - deepdiff report "values_changed" while dictA has **no intersection** with dictB.
+        - `merged` result will **degrade** to basic types: list or dict. If you want to keep initial/original type, use `hook_keepInitClass` or `hook_keepImmutable`.
+        """
         old = cls.get_item(root.t1, node)
         new = cls.get_item(root.t2, node)
+        isOldMap = isinstance(old, Mapping)
         all_iterable = iterable(old) and iterable(new)
-        xor_map = isinstance(old, Mapping) ^ isinstance(new, Mapping)
+        xor_map = isOldMap ^ isinstance(new, Mapping)
         if not all_iterable or xor_map:
             raise ValueError(
                 "old&new are not same type. Try to use `hook_sameKey_diffValue` before, or override/try...catch"
             )
         Log.debug(f"🌒 intersect {type(old)=}\t{type(new)=}")
-        init = node.t1
-        init_ret = order != "old,new-^"
-        if isinstance(init, (Mapping, Set)):
-            ret: dict | set = {} if init_ret else old
-
-            def update(s):
-                ret.update(s)
-
-        else:
-            ret: list = [] if init_ret else old
-
-            def update(s):
-                ret.extend(s)
-
         orders = cast(list[MergeOrderBase], order.split(","))
+        if isOldMap:
+            # only use key not value, so you must use `sameKey_diffValue()` to solve conflict before!
+            merged_map = {**old, **new} if "new" in orders else {**new, **old}  # safety
+            old = tuple(old)
+            new = tuple(new)
+
+        merged = []
+
+        def update(s):
+            merged.extend(s)
+
         if "^" in order:
-            # TODO: dict ?
             o = set(old)
             n = set(new)
             intersect = o.intersection(n)
         for od in orders:
             if od == "^":
-                item = intersect
+                item = tuple(intersect)
             elif od == "old-^":
-                item = o - intersect
+                item = tuple(o - intersect)
             elif od == "new-^":
-                item = n - intersect
+                item = tuple(n - intersect)
             elif od == "old":
                 item = old
             elif od == "new":
                 item = new
             else:
                 raise ValueError(f"invalid syntax={od} from {order=}")
-            Log.debug("item=%s from od=%s", item, od)
-            if init_ret:
-                update(item)
-        Log.debug("old=%s\tnew=%s\tret=%s", old, new, ret)
-        cls.set_item(root, node, ret)
+            Log.debug("\t➕ item=%s from od=%s", item, od)
+            update(item)
+        if isOldMap:
+            merged = dict({k: merged_map.get(k) for k in merged})
+        Log.debug("🌒 old=%s\tnew=%s\tret=%s", old, new, merged)
+        cls.set_item(root, node, merged)
 
     @classmethod
     def hook_auto(
@@ -333,19 +342,27 @@ class merge[T]:
         root: DeepDiff,
         node: DeepDiff,
         auto: AutoDict | None = None,
+        diffType: DiffReportType | RAISE = RAISE,
         **env,
     ) -> Generator[DeepDiff, Any, bool]:
         """auto merge"""
+        undef_t1 = isNotPresent(node.t1)
+        undef_t2 = isNotPresent(node.t2)
+        if undef_t1 and undef_t2:
+            raise ValueError("node.t1 and node.t2 both NotPresent")
+        env = {**env, "auto": auto, "diffType": diffType}
         hit = False
         if auto:
             for types, order in auto.items():
-                if isType(node.t1, types) and isType(node.t2, types):
+                hit_t1 = isType(node.t1, types)
+                hit_t2 = isType(node.t2, types)
+                if hit := (hit_t1 or hit_t2):
                     # 命中rule
-                    hit = True
                     Log.debug("⚽ hit auto types=%s", types)
                     break
         if not (auto and hit):
-            yield from cls.yield_set(root, node)
+            Log.debug("🥅 not hit any auto rule, yield")
+            yield from cls.yield_set(root, node, env)
             return
         if func := unpack_method(order):
             func = cast(merge.HookFunc, func)
@@ -353,17 +370,17 @@ class merge[T]:
             # need invoke cls.set_item in rule()
             # no tuple[funcs...], so no del conflict
         elif order == "yield":
-            yield from cls.yield_set(root, node)
+            yield from cls.yield_set(root, node, env)
         elif order == "del":
-            cls.del_item(root.t1, node)
+            cls.del_item(root, node)
         elif order == "":
             # empty container
             cls.set_item(root, node, node.t1.__class__())
         elif order == "old":
             pass
-        elif order == "new":
+        elif order == "new" or (undef_t1 and "new" in order):  # type: ignore
             cls.set_item(root, node)
-        elif "^" in order:
+        elif "^" in order:  # type: ignore
             cls._hook_intersect(root, node, order, **env)
         else:
             raise ValueError(f"invalid {{{types}:{order}}} from {auto=}")
@@ -381,8 +398,8 @@ class merge[T]:
         "else": (hook_auto, hook_keepImmutable),
     }
 
-    class MergeListOperator(BaseOperator):
-        """do NOT dig down when the iterable(or list) is ALL consist of scalar values(bool|int|str|...). eg: [0,1,"s"]"""
+    class MergeFlatIterableOperator(BaseOperator):
+        """do NOT dig down when the iterable(or list/dict) is ALL consist of scalar values(bool|int|str|...). eg: [0,1,"s"], {"num": 0, "key": "s"}"""
 
         def match(self, level):
             # will still dig into [0, [...], 1]
@@ -400,21 +417,35 @@ class merge[T]:
     deepdiff_args = dict(
         view="tree",
         ignore_type_in_groups=((MutableMapping,), (MutableSequence,), (MutableSet,)),
-        custom_operators=(MergeListOperator(),),
+        custom_operators=(MergeFlatIterableOperator(),),
     )
     """
     see [DeepDiff](https://zepworks.com/deepdiff/current/ignore_types_or_values.html#ignore-type-in-groups), by default will:
     - tree view for raw data
     - ignore `type_changes` to focus on data changes.
-    - don't dig into list at leaf level, ready for merge list.
+    - don't dig into list/dict at leaf level, be ready for merge list.
     """
+
+    class Yield(TypedDict, total=False, extra_items=Any):
+        root: DeepDiff
+        node: DeepDiff
+        """initial/original node data. use `old`/`new` instead of `node.t1`/`node.t2` if you want to get the current right value"""
+        old: Any
+        """current old value"""
+        new: Any
+        """current new value"""
+        auto: "merge.AutoDict"
+        sameKey_diffValue: MergeEnd
+        prev_ret: Any
+        """previous hook func return"""
+        diffType: DiffReportType
 
     @classmethod
     def yield_set(
-        cls, root: DeepDiff, node: DeepDiff
-    ) -> Generator[DeepDiff, Any, None]:
+        cls, root: DeepDiff, node: DeepDiff, env: Mapping[str, Any]
+    ) -> Generator[Yield, Any, None]:
         """`yield from cls.yield_set(root, node)` will give control to outside that `gen.send(NEW_V)`"""
-        NEW_V = yield node
+        NEW_V = yield {**env, "root": root, "node": node}
         if NEW_V is not None:
             if NEW_V is NONE:
                 NEW_V = None
@@ -430,22 +461,28 @@ class merge[T]:
         env: Mapping[str, Any] = {},
     ) -> Generator[DeepDiff, Any, None]:
         """execute hook rule"""
+        env = {**env, "diffType": key}
         if iterable(value):
-            for func in value:
+            prev_ret = None
+            for idx, func in enumerate(value):
                 if func == "yield":
-                    yield from cls.yield_set(root, node)
+                    yield from cls.yield_set(root, node, env)
                 elif func := unpack_method(func, cls):
                     func = cast(merge.HookFunc, func)
-                    env = {"diffType": key, **env}
-                    gen = func(root, node, **env)
-                    ret: bool | None = yield from return_from(gen)
-                    if ret is True:
-                        # NOTE: skip else funcs for current diff-node
+                    env = {**env, "diffType": key, "prev_ret": prev_ret}
+                    try:
+                        gen = func(root, node, **env)
+                        prev_ret = yield from return_from(gen)
+                    except Exception as e:
+                        Log.error(
+                            f"{func=} at {idx=} raise, so skip else funcs from {{{key}:{value}}} for current diff-node",
+                            exc_info=e,
+                        )
                         break
                 else:
                     raise ValueError(f"invalid {func} from {{{key}:{value}}}")
         elif value == "yield":
-            yield from cls.yield_set(root, node)
+            yield from cls.yield_set(root, node, env)
         elif value == "new":
             cls.set_item(root, node)
         elif value == "old":
@@ -466,7 +503,6 @@ class merge[T]:
         cls,
         old_new: tuple[Iterable, Iterable] | DeepDiff[T] | DeepDiff,
         dictDict: KwargsDictDict | None = {},
-        mergeList: bool = True,
         sameKey_diffValue: MergeEnd = "new",
         auto: AutoDict | None = auto_old_new,
         hook: Hook = hooks_allMutable,
@@ -488,7 +524,6 @@ class merge[T]:
             old_new: also accepct **`DeepDiff(t1, t2, **preset.deepdiff)`** \n
                 will update the `old`, but you can use `old2 = deepcopy(old)` and pass like `old_new=(old2, new)`, see [Destructive Merge](https://deepmerge.readthedocs.io/en/latest/guide.html#merges-are-destructive)
             dictDict: convert `list[dict]` into `dict[dict]` with `idKey` internally, set to `None` to disable `dictDict()` pre-process.
-            mergeList: if False, will not use `MergeListOperator()` for DeepDiff
             sameKey_diffValue: see `hook_sameKey_diffValue()`
             auto: auto resolve **mergeable** conflict, see `auto_default`
                 - if not match any rule at last, will yield.
@@ -524,9 +559,6 @@ class merge[T]:
             old, new = old_new
             if dictDict is not None:
                 old, new, dictPath = cls.dictDict(old, new, **dictDict)
-                diff_args = cls.deepdiff_args.copy()
-                if not mergeList:
-                    diff_args.pop("custom_operators")
             diff = DeepDiff(old, new, **cls.deepdiff_args)  # type: ignore
 
         cls.get_item = getItemFunc  # type:ignore
@@ -552,7 +584,9 @@ class merge[T]:
                 Log.debug(f"{dt=}")
                 for d in diffs:
                     d.keypath = d.path(output_format="list")
-                    Log.debug(f"{d.keypath=}\t{d.t1=}\t{d.t2=}")
+                    Log.debug(
+                        f"{d.keypath=}\t{type(d.t1)} {d.t1=}\t{type(d.t2)} {d.t2=}"
+                    )
                     yield from cls.exec_hook(
                         dt, hook.get(dt, hook["else"]), root=diff, node=d, env=env
                     )

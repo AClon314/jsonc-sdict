@@ -36,16 +36,11 @@ def iterable[V](obj: Iterable[V] | Any) -> TypeIs[Iterable[V]]:
     return isinstance(obj, Iterable) and not isinstance(obj, (str, bytes, bytearray))
 
 
-def iterableButNotMap[V](obj: Iterable[V] | Any) -> TypeIs[Iterable[V]]:
-    """Iterable[V] but NOT Mapping[K,V]"""
-    return isinstance(obj, Iterable) and not isinstance(
-        obj, (str, bytes, bytearray, Mapping)
-    )
-
-
 def isFlatIterable[V](obj: Iterable[V] | Any) -> TypeIs[Iterable[V]]:
     """[0,1,"s"] return True; [0, {...}, [...]] return False"""
-    return iterableButNotMap(obj) and not any(iterableButNotMap(x) for x in obj)
+    return iterable(obj) and not any(
+        iterable(x) for x in (obj.values() if isinstance(obj, Mapping) else obj)
+    )
 
 
 @overload
@@ -63,12 +58,16 @@ def unpack_method[R](deco: Callable[PS, R]) -> Callable[PS, R]: ...
 
 
 @overload
-def unpack_method(deco: Any) -> None: ...
+def unpack_method(deco: Any) -> Callable | None: ...
 
 
 def unpack_method(
     deco: classmethod | staticmethod, cls: type | None = None
 ) -> Callable | None:
+    """
+    Returns
+        None if deco is not Callable
+    """
     if isinstance(deco, classmethod):
         return deco.__get__(None, cls)
     elif isinstance(deco, staticmethod):
