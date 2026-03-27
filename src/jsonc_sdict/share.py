@@ -4,7 +4,7 @@ from types import MappingProxyType
 
 import os
 import logging
-from collections.abc import Callable, Iterable, Generator, Mapping
+from collections.abc import Callable, Iterable, Generator, Mapping, Collection
 from typing import cast, Any, ParamSpec, TypeIs, TypeVar, FrozenSet, overload
 
 
@@ -263,6 +263,51 @@ def len_slice(len: int, Slice: slice) -> int:
             return 0
         else:
             return (effective_start - effective_stop + abs(step) - 1) // abs(step)
+
+
+def are_equal(
+    a,
+    b,
+    preprocess: Callable[[Any], Any] | None = None,
+    _seen: set[tuple[int, int]] | None = None,
+):
+    """also compare the **order of keys**, because python's `==` will ignore that"""
+    if id(a) == id(b):
+        return True
+    if preprocess:
+        a = preprocess(a)
+        b = preprocess(b)
+    if id(a) == id(b):
+        return True
+
+    # `seen` to avoid RecursionError
+    # a = {}
+    # a["self"] = a
+    if _seen is None:
+        _seen = set()
+    pair = (id(a), id(b))
+    if pair in _seen:
+        return True
+    _seen.add(pair)
+
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        if len(a) != len(b):
+            return False
+        for (ka, va), (kb, vb) in zip(a.items(), b.items(), strict=True):
+            if ka != kb:
+                return False
+            if not are_equal(va, vb, preprocess, _seen):
+                return False
+        return True
+
+    if iterable(a) and iterable(b):
+        if isinstance(a, Collection) and isinstance(b, Collection) and len(a) != len(b):
+            return False
+        return all(
+            are_equal(x, y, preprocess, _seen) for x, y in zip(a, b, strict=True)
+        )
+
+    return a == b
 
 
 PS = ParamSpec("PS")

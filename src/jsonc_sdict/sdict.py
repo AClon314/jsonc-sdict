@@ -39,6 +39,7 @@ from jsonc_sdict.share import (
     copy_args,
     iterable,
     in_range,
+    are_equal,
     getLogger,
 )
 from jsonc_sdict.weakList import WeakList
@@ -401,7 +402,7 @@ def dictDict(
     getValue: Callable[[Any, Any], Any] = get_item_attr,
 ) -> Generator[ddYield, Hashable, tuple[NestSDict, list[tuple]]]:
     """
-    list[dict[list...]] or dict[list[dict...]] to pure nest dict like dict[dict[dict...]].
+    list[dict[list...]] or dict[list[dict...]] to pure nest dict like dict[dict[dict...]], by extract `idKey` in dict
     use before `merge()`, because list[dict] is hard to merge correctly(while list[Scalar] or dict[...] is easy)
 
     ```python
@@ -465,39 +466,39 @@ def dictDict(
 # ------------------------------------------------------------
 
 
-def unref(obj, const=False, memo: dict[int, Any] | None = None):
+def unref(obj, const=False, _memo: dict[int, Any] | None = None):
     """
     Args:
         const: return tuple/MappingProxyType if const else list/dict,
-        memo: just leave default, internal {id(): value}
+        _memo: just leave default, internal {id(): value}
     """
-    if memo is None:
-        memo = {}
+    if _memo is None:
+        _memo = {}
     value = obj.v if isinstance(obj, sdict) else obj
     if not iterable(value):
         return value
 
     obj_id = id(value)
-    if obj_id in memo:
-        return memo[obj_id]
+    if obj_id in _memo:
+        return _memo[obj_id]
 
     if isinstance(value, Mapping):
         out = {}
-        memo[obj_id] = out
+        _memo[obj_id] = out
         for k, v in value.items():
-            out[k] = unref(v, const=const, memo=memo)
+            out[k] = unref(v, const=const, _memo=_memo)
         if const:
             frozen = MappingProxyType(out)
-            memo[obj_id] = frozen
+            _memo[obj_id] = frozen
             return frozen
         return out
 
     out_list = []
-    memo[obj_id] = out_list
-    out_list.extend(unref(v, const=const, memo=memo) for v in value)
+    _memo[obj_id] = out_list
+    out_list.extend(unref(v, const=const, _memo=_memo) for v in value)
     if const:
         frozen = tuple(out_list)
-        memo[obj_id] = frozen
+        _memo[obj_id] = frozen
         return frozen
     return out_list
 
@@ -554,7 +555,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
         self.repr = False
         """if you want `{}`, set to False; if you want `sdict({})` truly raw data, set to True"""
-        self.use_ref = data is None
+        self.use_ref: bool = data is None
         """affect the return of self.v"""
         super().__init__(data or ())
         self.ref = ref
@@ -595,7 +596,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     @property
     def v(self):
         """
-        return self.ref if self is empty and ref is set else self\n
+        return self.ref if self.use_ref\n
         will unpack weakref.ref
         """
         if not self.use_ref:
@@ -723,6 +724,15 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         self.del_cache()
 
     # TODO: move_to_end, 暂时不做
+
+    @classmethod
+    def are_equal(cls, a, b):
+        """also compare the **order of keys** or `self.v`, because python's `==` will ignore that"""
+        return are_equal(a, b, preprocess=lambda x: x.v if isinstance(x, sdict) else x)
+
+    def equal(self, obj):
+        """also compare the **order of keys** or `self.v`, because python's `==` will ignore that"""
+        return self.are_equal(self, obj)
 
     def rename_key(
         self,

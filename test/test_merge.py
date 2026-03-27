@@ -1,3 +1,4 @@
+from jsonc_sdict.sdict import sdict
 import pytest
 
 from jsonc_sdict.merge import DeepDiffProtocol, merge
@@ -25,9 +26,10 @@ def test_merge_basic():
     }
 
     merged = return_of(merge((t1, t2), dictDict=None))
-    assert merged == {
+    should = {
         "list-no^": [1, 2, 3, 4],
         "list^": [1, 2, 3],
-        "dict^": {"^": 0, "dict-no^": {0: 1, 1: 2}},
+        "dict^": {"dict-no^": {0: 1, 1: 2}, "^": 0},
         "dict-easy": {0: 0, 1: 1},
     }
+    assert sdict.are_equal(merged, should)
