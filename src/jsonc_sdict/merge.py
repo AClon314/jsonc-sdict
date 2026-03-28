@@ -193,6 +193,8 @@ class merge[T]:
         Args:
             value: by default use `t2`(new)
         """
+        if value is NONE:
+            value = None
         v = cls.get_item(root.t2, node) if value is UNSET else value
         return set_item_attr(root.t1, node.keypath, v)
 
@@ -206,8 +208,8 @@ class merge[T]:
             root = root.t1
         return del_item_attr(root, node.keypath)
 
-    auto_old_new: AutoDict = {Mapping: "old,new-^", iterable: "old,new-^"}
-    auto_new_old: AutoDict = {Mapping: "old,new-^", iterable: "new,old-^"}
+    auto_old_new: AutoDict = {iterable: "old,new-^"}
+    auto_new_old: AutoDict = {iterable: "new,old-^"}
 
     @classmethod
     def hook_keepInitClass(cls, root: DeepDiff, node: DeepDiff, **env) -> None:
@@ -344,7 +346,7 @@ class merge[T]:
         auto: AutoDict | None = None,
         diffType: DiffReportType | RAISE = RAISE,
         **env,
-    ) -> Generator[DeepDiff, Any, bool]:
+    ) -> Generator[DeepDiff, Any, Any]:
         """auto merge"""
         undef_t1 = isNotPresent(node.t1)
         undef_t2 = isNotPresent(node.t2)
@@ -352,21 +354,29 @@ class merge[T]:
             raise ValueError("node.t1 and node.t2 both NotPresent")
         env = {**env, "auto": auto, "diffType": diffType}
         hit = False
-        if auto:
+        if auto and not hit:
+            _node = node
+            if diffType.endswith("_added"):
+                # d.keypath=['k'] <class 'deepdiff.helper.NotPresent'> d.t1=not present   <class 'str'> d.t2='v'
+                keypath = _node.keypath
+                _node = _node.up
+                _node.keypath = keypath[:-1]
             for types, order in auto.items():
-                hit_t1 = isType(node.t1, types)
-                hit_t2 = isType(node.t2, types)
+                hit_t1 = isType(_node.t1, types)
+                hit_t2 = isType(_node.t2, types)
                 if hit := (hit_t1 or hit_t2):
                     # 命中rule
                     Log.debug("⚽ hit auto types=%s", types)
                     break
-        if not (auto and hit):
+        if not hit:
             Log.debug("🥅 not hit any auto rule, yield")
             yield from cls.yield_set(root, node, env)
             return
         if func := unpack_method(order):
             func = cast(merge.HookFunc, func)
-            yield from return_from(func(root, node))
+            NEW_V = yield from return_from(func(root, node))
+            if not isinstance(func, Generator) or NEW_V is not None:
+                cls.set_item(root, node, NEW_V)
             # need invoke cls.set_item in rule()
             # no tuple[funcs...], so no del conflict
         elif order == "yield":
@@ -435,6 +445,8 @@ class merge[T]:
         new: Any
         """current new value"""
         auto: "merge.AutoDict"
+        func_hook: Callable
+        """current function from hook, you can use `func_hook.__name__`"""
         sameKey_diffValue: MergeEnd
         prev_ret: Any
         """previous hook func return"""
@@ -445,10 +457,14 @@ class merge[T]:
         cls, root: DeepDiff, node: DeepDiff, env: Mapping[str, Any]
     ) -> Generator[Yield, Any, None]:
         """`yield from cls.yield_set(root, node)` will give control to outside that `gen.send(NEW_V)`"""
-        NEW_V = yield {**env, "root": root, "node": node}
+        NEW_V = yield {
+            **env,
+            "root": root,
+            "node": node,
+            "old": cls.get_item(root, node),
+            "new": cls.get_item(root.t2, node),
+        }
         if NEW_V is not None:
-            if NEW_V is NONE:
-                NEW_V = None
             cls.set_item(root, node, NEW_V)
 
     @classmethod
@@ -469,7 +485,12 @@ class merge[T]:
                     yield from cls.yield_set(root, node, env)
                 elif func := unpack_method(func, cls):
                     func = cast(merge.HookFunc, func)
-                    env = {**env, "diffType": key, "prev_ret": prev_ret}
+                    env: merge.Yield = {
+                        **env,
+                        "diffType": key,
+                        "prev_ret": prev_ret,
+                        "func_hook": func,
+                    }
                     try:
                         gen = func(root, node, **env)
                         prev_ret = yield from return_from(gen)
@@ -497,13 +518,14 @@ class merge[T]:
         old, path_old = return_of(dictDict(dfs(old), **kw))
         new, path_new = return_of(dictDict(dfs(new), **kw))
         path = [*path_old, *path_new]
+        Log.debug("path=%s\nold=%s\nnew=%s", path, old, new)
         return old, new, path
 
     def __new__(
         cls,
         old_new: tuple[Iterable, Iterable] | DeepDiff[T] | DeepDiff,
         dictDict: KwargsDictDict | None = {},
-        sameKey_diffValue: MergeEnd = "new",
+        sameKey_diffValue: MergeEnd = "old",
         auto: AutoDict | None = auto_old_new,
         hook: Hook = hooks_allMutable,
         getItemFunc: Callable[[type[Self], Any, Any], Any] = get_item,
@@ -523,8 +545,8 @@ class merge[T]:
         Args:
             old_new: also accepct **`DeepDiff(t1, t2, **preset.deepdiff)`** \n
                 will update the `old`, but you can use `old2 = deepcopy(old)` and pass like `old_new=(old2, new)`, see [Destructive Merge](https://deepmerge.readthedocs.io/en/latest/guide.html#merges-are-destructive)
-            dictDict: convert `list[dict]` into `dict[dict]` with `idKey` internally, set to `None` to disable `dictDict()` pre-process.
-            sameKey_diffValue: see `hook_sameKey_diffValue()`
+            dictDict: suggest `{"idKey": "id"}`. convert `list[dict]` into `dict[dict]` with `idKey` internally, set to `None` to disable `dictDict()` pre-process.
+            sameKey_diffValue (MergeEnd): default `"old"`, see `hook_sameKey_diffValue()`
             auto: auto resolve **mergeable** conflict, see `auto_default`
                 - if not match any rule at last, will yield.
                     If call `send(None)` or not call `gen.send(NEW_V)` before `next()`, will preserve **old**'s key-value pair.
@@ -537,7 +559,7 @@ class merge[T]:
             env: for hook funcs
 
         Returns:
-            old
+            old (merged)
 
         ## Send
             NEW_V: if you don't want to use new_v, you send your wanted value here

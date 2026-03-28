@@ -290,7 +290,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     readonly=False,
     setValue: SetValueFunc = set_item_attr,
     *,
-    parent: WeakList = WeakList(),
+    parents: WeakList = WeakList(),
     keypaths: KeyPaths = (),
     pathCount: PathCount = (0,),
 ) -> Generator[CLS]:
@@ -327,7 +327,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     pathCount = (*pathCount[:-1], pathCount[-1] + 1)
     if isinstance(obj, sdict) and not readonly:
         # update
-        obj.parents = parent
+        obj.parents = parents
         obj.keypaths = keypaths
         obj.pathCount = pathCount
         self = obj
@@ -345,7 +345,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             ref=ref,
             # deep==True等价于执行dfs()，所以False即可
             deep=False,
-            parent=parent,
+            parents=parents,
             keypaths=keypaths,
             pathCount=pathCount,
         )
@@ -370,7 +370,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             getChild=getChild,
             readonly=readonly,
             setValue=setValue,
-            parent=_parent,
+            parents=_parent,
             keypaths=_keypaths,
             pathCount=_pathCount,
         )
@@ -384,7 +384,8 @@ def dfs[K = int, V = Any, CLS = "sdict"](
 class ddYield:
     """yield of dictDict()"""
 
-    v: Any
+    obj: Any
+    """per object(usually dict) of list"""
     self: "sdict"
     """you should use `if newKey in self` to prevent duplicate key, otherwise `update()` would **overwrite** old value"""
 
@@ -429,36 +430,38 @@ def dictDict(
     # TODO: record in undoKeys to restore to original data structure for `merge()`
     undoKeys = []
 
-    def _yield(self: sdict, v):
-        key = yield ddYield(v=v, self=self)
+    def _yield(self: sdict, obj):
+        key = yield ddYield(obj=obj, self=self)
         if key is NONE:
             key = None
         elif key is None:
             if idKey is UNSET:
-                key = id(v)
+                key = id(obj)
                 if key in self:
                     raise NotImplementedError(
                         "rare edge case, click https://github.com/AClon314/jsonc-sdict/issues to report"
                     )
             else:
-                key = getValue(v, idKey)
-        self.update({key: v})
+                key = getValue(obj, idKey)
+        self.update({key: obj})
         # gen.send(self) # TODO: 似乎执不执行，结果都一样？
 
-    while self := next(gen):
+    root = next(gen)
+    for self in itertools.chain((root,), gen):
+        Log.debug(f"{self=}")
         if not isinstance(self, sdict):
             raise TypeError("only support dictDict(gen= dfs(cls=sdict) )")
-        if self.use_ref:
-            if iterable(self.ref):
-                for v in self.ref:
-                    yield from _yield(self, v)
-            else:
-                yield from _yield(self, self.ref)
-            undoKeys.append(self.keypath)  # TODO
-            # undoKeys.append(list(itertools.product(*self.keypaths))[-1])  # TODO
-            self.use_ref = False
-            self.ref = None
-    return self, undoKeys
+        if isinstance(self.v, Mapping) or not iterable(self.v):
+            continue
+        objs = tuple(self.v)
+        self.use_ref = False
+        self.ref = None
+        for obj in objs:
+            yield from _yield(self, obj)
+        undoKeys.append(self.keypath)  # TODO
+        # undoKeys.append(list(itertools.product(*self.keypaths))[-1])  # TODO
+    Log.debug(f"final {root=}\n{undoKeys=}")
+    return root, undoKeys
 
 
 # ------------------------------------------------------------
@@ -573,7 +576,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """
         for _ in dfs(
             self,
-            parent=self.parents,
+            parents=self.parents,
             keypaths=self.keypaths,
             pathCount=self.pathCount,
         ):
@@ -581,6 +584,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         self.del_cache()
 
     type _Cached = Literal["height", "childkeys", "unref"]
+    _cached = set(get_args(_Cached))
 
     def del_cache(self, without: Iterable[_Cached] = ()):
         todo = self._cached - set(without)
