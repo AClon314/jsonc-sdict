@@ -52,14 +52,14 @@ type PathCount = tuple[int, ...]
 type Node[K = int, V = Any] = Mapping[K, V] | Iterable[V]
 
 
-type NestDict[K = str, Leaf = Any] = "dict[K, NestDict[K, Leaf] | Leaf]"
-type NestSDict[K = str, Leaf = Any] = "sdict[K, NestSDict[K, Leaf] | Leaf]"
-type NestMap[K = str, Leaf = Any] = "Mapping[K, NestMap[K, Leaf] | Leaf]"
-type NestMutMap[K = str, Leaf = Any] = "MutableMapping[K, NestMutMap[K, Leaf] | Leaf]"
-type NestDictList[K = str, Leaf = Any] = (
+type NestDict[K = Any, Leaf = Any] = "dict[K, NestDict[K, Leaf] | Leaf]"
+type NestSDict[K = Any, Leaf = Any] = "sdict[K, NestSDict[K, Leaf] | Leaf]"
+type NestMap[K = Any, Leaf = Any] = "Mapping[K, NestMap[K, Leaf] | Leaf]"
+type NestMutMap[K = Any, Leaf = Any] = "MutableMapping[K, NestMutMap[K, Leaf] | Leaf]"
+type NestDictList[K = Any, Leaf = Any] = (
     "dict[K, list[NestDictList[K, Leaf]] | list[Leaf]]"
 )
-type NestMapIter[K = str, Leaf = Any] = (
+type NestMapIter[K = Any, Leaf = Any] = (
     "Mapping[K, Iterable[NestMapIter[K, Leaf]] | Iterable[Leaf]]"
 )
 
@@ -340,15 +340,19 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             # list / pydantic
             ref = obj
         # cls = cast(type[sdict], cls)
-        self = cls(  # type: ignore
-            data=data,
-            ref=ref,
-            # deep==True等价于执行dfs()，所以False即可
-            deep=False,
-            parents=parents,
-            keypaths=keypaths,
-            pathCount=pathCount,
-        )
+        try:
+            self = cls(  # type: ignore
+                data=data,
+                ref=ref,
+                # deep==True等价于执行dfs()，所以False即可
+                deep=False,
+                parents=parents,
+                keypaths=keypaths,
+                pathCount=pathCount,
+            )
+        except Exception as e:
+            Log.error(f"{cls=} is not sdict, fallback to positional init", exc_info=e)
+            self = cls(data if data else ref)
     self = cast(sdict, self)
     newSelf = None
     if yieldIf is None or yieldIf(self, obj):
@@ -381,13 +385,23 @@ def dfs[K = int, V = Any, CLS = "sdict"](
 
 
 @dataclass
-class ddYield:
+class ddYield[CLS = "sdict"]:
     """yield of dictDict()"""
 
-    obj: Any
-    """per object(usually dict) of list"""
-    self: "sdict"
+    v: Any
+    """per item(usually dict) of list"""
+    self: CLS
     """you should use `if newKey in self` to prevent duplicate key, otherwise `update()` would **overwrite** old value"""
+
+
+@dataclass
+class ddReturn[CLS = "sdict"]:
+    """return of dictDict()"""
+
+    v: CLS
+    """final result value"""
+    keypaths: list[tuple]
+    """which keypaths are converted into dict[dict] from list[dict]"""
 
 
 class KwargsDictDict(TypedDict, total=False):
@@ -397,11 +411,11 @@ class KwargsDictDict(TypedDict, total=False):
     """getValue(current_dict, idKey): get idKey of dict"""
 
 
-def dictDict(
-    gen: Generator,
+def dictDict[CLS = "sdict"](
+    gen_dfs: Generator[CLS],
     idKey: Any = UNSET,
-    getValue: Callable[[Any, Any], Any] = get_item_attr,
-) -> Generator[ddYield, Hashable, tuple[NestSDict, list[tuple]]]:
+    getValue: Callable[[Any, Any], Any] | None = get_item,
+) -> Generator[ddYield[CLS], Hashable, ddReturn[CLS]]:
     """
     list[dict[list...]] or dict[list[dict...]] to pure nest dict like dict[dict[dict...]], by extract `idKey` in dict
     use before `merge()`, because list[dict] is hard to merge correctly(while list[Scalar] or dict[...] is easy)
@@ -427,27 +441,26 @@ def dictDict(
     Raises:
         KeyError: when all idKey is not found
     """
-    # TODO: record in undoKeys to restore to original data structure for `merge()`
-    undoKeys = []
+    keypaths = []
 
-    def _yield(self: sdict, obj):
-        key = yield ddYield(obj=obj, self=self)
+    def _yield(self: sdict, v):
+        key = yield ddYield(v=v, self=self)
         if key is NONE:
             key = None
         elif key is None:
             if idKey is UNSET:
-                key = id(obj)
+                key = id(v)
                 if key in self:
                     raise NotImplementedError(
                         "rare edge case, click https://github.com/AClon314/jsonc-sdict/issues to report"
                     )
-            else:
-                key = getValue(obj, idKey)
-        self.update({key: obj})
+            elif getValue:
+                key = getValue(v, idKey)
+        self.update({key: v})
         # gen.send(self) # TODO: 似乎执不执行，结果都一样？
 
-    root = next(gen)
-    for self in itertools.chain((root,), gen):
+    root = next(gen_dfs)
+    for self in itertools.chain((root,), gen_dfs):
         Log.debug(f"{self=}")
         if not isinstance(self, sdict):
             raise TypeError("only support dictDict(gen= dfs(cls=sdict) )")
@@ -458,10 +471,14 @@ def dictDict(
         self.ref = None
         for obj in objs:
             yield from _yield(self, obj)
-        undoKeys.append(self.keypath)  # TODO
-        # undoKeys.append(list(itertools.product(*self.keypaths))[-1])  # TODO
-    Log.debug(f"final {root=}\n{undoKeys=}")
-    return root, undoKeys
+        keypaths.append(self.keypath)  # TODO: keypaths support?
+    Log.debug(f"final {root=}\n{keypaths=}")
+    return ddReturn(v=root, keypaths=keypaths)
+
+
+def un_dictDict(context: ddReturn):
+    """restore from dictDict()"""
+    pass
 
 
 # ------------------------------------------------------------
@@ -565,7 +582,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """can storage pydantic_model_data, list_data..."""
         self.parents = parents
         self.keypaths = keypaths
-        """from root"""
+        """from root. Use this when "object shared(same `id()`) in python" happens, otherwise I recommend you use `keypath` without 's'."""
         self.pathCount = pathCount
         if deep:
             self.rebuild()
@@ -1054,7 +1071,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         return list(self.values()).count(value)
 
     @property
-    def keypath(self) -> tuple:  # TODO list or tuple?
+    def keypath(self) -> tuple:
         return list(itertools.product(*self.keypaths))[-1]
 
     @property

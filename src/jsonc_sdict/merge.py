@@ -285,7 +285,7 @@ class merge[T]:
         root: DeepDiff,
         node: DeepDiff,
         order: MergeOrder | RAISE = RAISE,
-        diffType: DiffReportType | RAISE = RAISE,
+        # diffType: DiffReportType | RAISE = RAISE,
         **env,
     ):
         """
@@ -407,6 +407,7 @@ class merge[T]:
         "repetition_change": "yield",
         "else": (hook_auto, hook_keepImmutable),
     }
+    """if you want to restore from `dictDict()`, use `un_dictDict()` instead."""
 
     class MergeFlatIterableOperator(BaseOperator):
         """do NOT dig down when the iterable(or list/dict) is ALL consist of scalar values(bool|int|str|...). eg: [0,1,"s"], {"num": 0, "key": "s"}"""
@@ -512,19 +513,18 @@ class merge[T]:
             cls.del_item(root, node)
 
     @staticmethod
-    def dictDict(
-        old, new, **kw: Unpack[KwargsDictDict]
-    ) -> tuple[Any, Any, list[tuple]]:
-        old, path_old = return_of(dictDict(dfs(old), **kw))
-        new, path_new = return_of(dictDict(dfs(new), **kw))
-        path = [*path_old, *path_new]
-        Log.debug("path=%s\nold=%s\nnew=%s", path, old, new)
-        return old, new, path
+    def dictDict(old, new, **kw: Unpack[KwargsDictDict]) -> tuple[Any, Any, set[tuple]]:
+        dd_old = return_of(dictDict(dfs(old), **kw))
+        dd_new = return_of(dictDict(dfs(new), **kw))
+        path = set((*dd_old.keypaths, *dd_new.keypaths))
+        Log.debug("path=%s\nold=%s\nnew=%s", path, dd_old, dd_new)
+        return dd_old.v, dd_new.v, path
 
     def __new__(
         cls,
         old_new: tuple[Iterable, Iterable] | DeepDiff[T] | DeepDiff,
         dictDict: KwargsDictDict | None = {},
+        deepdiff_args: Mapping[str, Any] = deepdiff_args,
         sameKey_diffValue: MergeEnd = "old",
         auto: AutoDict | None = auto_old_new,
         hook: Hook = hooks_allMutable,
@@ -545,7 +545,10 @@ class merge[T]:
         Args:
             old_new: also accepct **`DeepDiff(t1, t2, **preset.deepdiff)`** \n
                 will update the `old`, but you can use `old2 = deepcopy(old)` and pass like `old_new=(old2, new)`, see [Destructive Merge](https://deepmerge.readthedocs.io/en/latest/guide.html#merges-are-destructive)
-            dictDict: suggest `{"idKey": "id"}`. convert `list[dict]` into `dict[dict]` with `idKey` internally, set to `None` to disable `dictDict()` pre-process.
+            dictDict: suggest `{"idKey": "id"}`. convert `list[dict]` into `dict[dict]` with `idKey` internally, set to `None` to disable `dictDict()` pre-process. \n
+                because list[dict] is hard to merge correctly(while list[Scalar] or dict[...] is easy) \n
+                disabled when `old_new` is DeepDiff, because dictDict() should run before DeepDiff()
+            deepdiff_args: the kwargs for DeepDiff(**deepdiff_args)
             sameKey_diffValue (MergeEnd): default `"old"`, see `hook_sameKey_diffValue()`
             auto: auto resolve **mergeable** conflict, see `auto_default`
                 - if not match any rule at last, will yield.
@@ -569,19 +572,18 @@ class merge[T]:
             `jsonc_sdict` would have other program lang's version, so
             `auto` is cross-platform rule, but `hook` is specify on different dependency(pure-python is `DeepDiff`, TODO: substitute to c-lib for better performance)
         """
+        convertedPath = None
         if isinstance(old_new, DeepDiffProtocol):
             if old_new.view != "tree":
                 raise ValueError(f"{old_new.view=} should be 'tree' when init DeepDiff")
             old = old_new.t1
             new = old_new.t2
-            if dictDict is not None:
-                old, new, dictPath = cls.dictDict(old, new, **dictDict)
             diff = cast(DeepDiff, old_new)
         else:
             old, new = old_new
             if dictDict is not None:
-                old, new, dictPath = cls.dictDict(old, new, **dictDict)
-            diff = DeepDiff(old, new, **cls.deepdiff_args)  # type: ignore
+                old, new, convertedPath = cls.dictDict(old, new, **dictDict)
+            diff = DeepDiff(old, new, **deepdiff_args)
 
         cls.get_item = getItemFunc  # type:ignore
         cls.set_item = setItemFunc  # type:ignore
@@ -613,6 +615,6 @@ class merge[T]:
                         dt, hook.get(dt, hook["else"]), root=diff, node=d, env=env
                     )
 
-        Log.debug(f"{diff.t1=}")
+        Log.debug(f"{convertedPath=}\n{diff.t1=}")
         # TODO: restore dictDict to original list[dict...] by dictPath
         return diff.t1
