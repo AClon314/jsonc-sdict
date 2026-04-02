@@ -1,7 +1,7 @@
 import pytest
 
 from jsonc_sdict.merge import DeepDiffProtocol, merge
-from jsonc_sdict.share import return_of, are_equal
+from jsonc_sdict.share import are_equal
 
 
 def test_merge_module_helpers_import_cleanly():
@@ -24,7 +24,7 @@ def test_merge_basic():
         "dict-easy": {0: 0, 1: 1},
     }
 
-    merged = return_of(merge((t1, t2), dictDict=None))
+    merged = merge((t1, t2), dictDict=None).solve_all().merged
     should = {
         "list-no^": [1, 2, 3, 4],
         "list^": [1, 2, 3],
@@ -48,13 +48,15 @@ def test_merge_dictDict():
     t1 = {"children": l1}
     t2 = {"children": l2, "k": "v"}
 
-    merged = return_of(
+    merged = (
         merge((t1, t2), dictDict={"idKey": "id"}, sameKey_diffValue="new")
+        .solve_all()
+        .merged
     )
     should = {
         "children": [
-            {"id": 2, "name": "1", "old": None, "new": ""},
-            {"id": 1, "name": "2"},
+            {"id": 1, "name": "2", "old": None},
+            {"id": 2, "name": "1", "new": ""},
             {"id": 3, "name": "3"},
         ],
         "k": "v",

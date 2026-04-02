@@ -470,7 +470,7 @@ def dictDict[CLS = "sdict"](
     Raises:
         KeyError: when all idKey is not found
     """
-    keypaths = []
+    converted: list[sdict] = []
 
     def _yield(self: sdict, v):
         key = yield ddYield(v=v, self=self)
@@ -486,8 +486,18 @@ def dictDict[CLS = "sdict"](
         self.update({key: v})
         # gen.send(self) # TODO: 似乎执不执行，结果都一样？
 
-    root = next(gen_dfs)
-    for self in itertools.chain((root,), gen_dfs):
+    # 必须等待dfs()消耗完后再开始覆写，因为每次dfs()迭代的内部都会把子节点写回父节点
+    # {
+    #   "g1": {...},
+    #   "g2": {...},
+    #   0: {...}, # dfs() 写回的旧key
+    #   1: {...},
+    # }
+    nodes = tuple(gen_dfs)
+    if not nodes:
+        raise ValueError("gen_dfs is empty")
+    root = nodes[0]
+    for self in nodes:
         Log.debug(f"{self=}")
         if not isinstance(self, sdict):
             raise TypeError("only support dictDict(gen= dfs(cls=sdict) )")
@@ -498,14 +508,35 @@ def dictDict[CLS = "sdict"](
         self.ref = None
         for obj in objs:
             yield from _yield(self, obj)
-        keypaths.append(self.keypath)  # TODO: keypaths support?
+        converted.append(self)
+    try:
+        root.rebuild()
+    except Exception as e:
+        Log.error(
+            "sdict(root).rebuild() failed, which can't update the keypaths for each node",
+            exc_info=e,
+        )
+    keypaths = [node.keypath for node in converted]
     Log.debug(f"final {root=}\n{keypaths=}")
     return ddReturn(v=root, keypaths=keypaths)
 
 
-def un_dictDict(context: ddReturn):
+def un_dictDict[CLS = "sdict"](context: ddReturn[CLS]) -> CLS:
     """restore from dictDict()"""
-    pass
+    root = context.v
+    # Restore deepest paths first so child paths like ("groups", "g1", "children")
+    # still exist before their parent ("groups") is turned back into a list.
+    for keypath in sorted(set(context.keypaths), key=len, reverse=True):
+        current = get_item_attr(root, keypath, default=UNSET)
+        if current is UNSET or not isinstance(current, Mapping):
+            continue
+        restored = list(current.values())
+        if keypath:
+            set_item_attr(root, keypath, restored)
+        else:
+            root = restored
+    context.v = root
+    return root
 
 
 # ------------------------------------------------------------

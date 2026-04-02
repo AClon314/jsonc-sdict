@@ -51,9 +51,11 @@ from jsonc_sdict.share import (
 from jsonc_sdict.sdict import (
     dfs,
     dictDict,
+    ddReturn,
     get_item_attr,
     set_item_attr,
     del_item_attr,
+    un_dictDict,
     KwargsDictDict as SdictKwargsDictDict,
 )
 
@@ -481,13 +483,17 @@ class merge[T1, T2](Iterable):
             raise ValueError(f"invalid {{{types}:{order}}} from {auto=}")
         return self
 
-    def solve(self) -> Self:
-        """the default solver, `merged` result will **degrade** to basic types: list or dict."""
+    def solve_each(self) -> Self:
+        """the default solver, consists of other solvers
+        ps: `merged` result will **degrade** to basic types: list or dict, but you can use:
+        ```python
+        for _ in (self := merged((old,new))):
+            self.solve_each()
+            self.solver_keepImmutable()
+            # self.solver_keepInitClass() # TODO: maybe buggy
+        ```"""
         if not self._iter_started:
-            try:
-                next(self)
-            except StopIteration:
-                return self
+            next(self)
         if self.env.diffType == "values_changed":
             self.solver_sameKey_diffValue()
         elif self.env.diffType == "type_changes":
@@ -505,6 +511,15 @@ for gen in merge(...):
         elif self.env.diffType == "repetition_change":
             raise _TODO
         self.solver_auto()
+        return self
+
+    def solve_all(self) -> Self:
+        """by default, solve all conflicts **without for...loop syntax**"""
+        for _ in self:
+            try:
+                self.solve_each()
+            except StopIteration:
+                break
         return self
 
     class MergeFlatIterableOperator(BaseOperator):
@@ -651,7 +666,10 @@ for gen in merge(...):
                 self._set_keypath(d)
                 Log.debug(f"{d.keypath=}\t{type(d.t1)} {d.t1=}\t{type(d.t2)} {d.t2=}")
                 yield self
-        # TODO: restore dictDict to original list[dict...] by dictPath
+        if self.env.ddRestore and self.env.ddPaths:
+            self.root.t1 = un_dictDict(
+                ddReturn(v=self.root.t1, keypaths=list(self.env.ddPaths))
+            )
         return self.merged
 
     def _set_keypath(self, node: DeepDiff | DiffLevel | None = None) -> list:
@@ -662,10 +680,10 @@ for gen in merge(...):
 
 
 if __name__ == "__main__":
-    result = merge(({0: 0}, {0: 0})).solve().merged
+    result = merge(({0: 0}, {0: 0})).solve_all().merged
     print("☀", result)
 
     for _ in (self := merge(({0: 0}, {0: 1}), sameKey_diffValue="new")):
-        self.solve()
+        self.solve_each()
     result = self.merged
     print("☀", result)

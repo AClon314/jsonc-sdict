@@ -3,16 +3,20 @@ from types import MappingProxyType
 import pytest
 
 from jsonc_sdict.sdict import (
+    dictDict,
     del_item,
     del_item_attr,
+    dfs,
     get_attr,
     get_item,
     get_item_attr,
     set_item,
     set_item_attr,
     sdict,
+    un_dictDict,
     unref,
 )
+from jsonc_sdict.share import return_of
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +83,30 @@ def test_unref_handles_nested_sdict_and_const_mode():
     assert isinstance(frozen, MappingProxyType)
     assert isinstance(frozen["a"], MappingProxyType)
     assert frozen["arr"] == (2, 3)
+
+
+def test_un_dictDict_restores_nested_and_root_lists():
+    nested = {
+        "groups": [
+            {
+                "id": "g1",
+                "children": [
+                    {"id": "c1", "name": "left"},
+                    {"id": "c2", "name": "right"},
+                ],
+            },
+            {"id": "g2", "children": []},
+        ],
+        "keep": {"value": 1},
+    }
+    nested_ctx = return_of(dictDict(dfs(nested), idKey="id"))
+    nested_restored = un_dictDict(nested_ctx)
+    assert unref(nested_restored) == nested
+
+    root = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+    root_ctx = return_of(dictDict(dfs(root), idKey="id"))
+    root_restored = un_dictDict(root_ctx)
+    assert unref(root_restored) == root
 
 
 def test_sdict_shallow_mapping_operations():
