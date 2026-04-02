@@ -129,6 +129,26 @@ def test_sdict_shallow_mapping_operations():
     assert list(data.keys()) == ["y", "c", "b", "A"]
 
 
+def test_sdict_merge_merges_into_self_and_forwards_kwargs():
+    data = make_sdict({"children": [{"id": 1, "name": "1", "old": None}]})
+
+    result = data.merge(
+        {"children": [{"id": 1, "name": "2", "new": ""}, {"id": 2, "name": "3"}]},
+        dictDict={"idKey": "id"},
+        sameKey_diffValue="new",
+    )
+
+    assert result is data
+    assert data.equal(
+        {
+            "children": [
+                {"id": 1, "name": "2", "old": None, "new": ""},
+                {"id": 2, "name": "3"},
+            ]
+        }
+    )
+
+
 def test_sdict_ref_mode_reads_and_writes_nested_values():
     data = [{"a": 1}, [2, 3]]
     ref_view = make_sdict(ref=data)

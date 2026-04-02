@@ -19,6 +19,7 @@ from typing import (
     Callable,
     Protocol,
     FrozenSet,
+    TypedDict,
 )
 
 from collections.abc import (
@@ -571,6 +572,15 @@ for gen in merge(...):
     class _KwargsDictDict(SdictKwargsDictDict, total=False):
         restore: bool
 
+    class Kwargs(TypedDict, total=False):
+        """merge(**kwargs) default export"""
+        old_new: tuple[T1, T2] | DeepDiff[T1, T2]
+        dictDict: "merge._KwargsDictDict | None"
+        deepdiff_args: Mapping[str, Any]
+        sameKey_diffValue: Type_MergeEnd
+        auto: "merge._Type_AutoDict | None"
+        env: dict
+
     def __init__(
         self,
         old_new: tuple[T1, T2] | DeepDiff[T1, T2],
@@ -677,13 +687,3 @@ for gen in merge(...):
             node = self.node
         node.keypath = tuple(node.path(output_format="list"))
         return node.keypath  # type: ignore
-
-
-if __name__ == "__main__":
-    result = merge(({0: 0}, {0: 0})).solve_all().merged
-    print("☀", result)
-
-    for _ in (self := merge(({0: 0}, {0: 1}), sameKey_diffValue="new")):
-        self.solve_each()
-    result = self.merged
-    print("☀", result)

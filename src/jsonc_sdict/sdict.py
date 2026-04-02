@@ -17,9 +17,10 @@ from typing import (
     Any,
     Self,
     Unpack,
+    TypeIs,
     Literal,
     TypedDict,
-    TypeIs,
+    TYPE_CHECKING,
 )
 from collections.abc import (
     Callable,
@@ -47,6 +48,9 @@ from jsonc_sdict.share import (
 )
 from jsonc_sdict.weakList import WeakList
 
+if TYPE_CHECKING:
+    from jsonc_sdict.merge import _merge
+
 type Key[K = Any, V = sdict] = K | int
 """sdict[ dict:Key | list:int-index ]"""
 type KeyPaths[K = Any, V = Any] = tuple[list[Key[K, V]], ...]
@@ -67,6 +71,7 @@ type NestMapIter[K = Any, Leaf = Any] = (
 )
 
 Log = getLogger(__name__)
+
 
 # ------------------------------------------------------------
 # recursive get
@@ -969,7 +974,24 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             self.del_cache()
         return self
 
-    # TODO: merge
+    def merge(
+        self,
+        obj: Mapping,
+        **kwargs: Unpack["_merge.Kwargs"],
+    ) -> Self:
+        """
+        Merge `obj` into `self` in place.
+
+        Args:
+            obj: the newer mapping to merge into current `self`
+            **kwargs: forwarded to `jsonc_sdict.merge.merge`, except `old_new`
+        """
+        if "old_new" in kwargs:
+            raise TypeError("sdict.merge() got unexpected keyword argument 'old_new'")
+        from jsonc_sdict.merge import merge
+
+        merge((self, obj), **kwargs).solve_all()
+        return self
 
     def keys_flat(
         self,
