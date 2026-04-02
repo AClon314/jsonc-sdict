@@ -27,8 +27,10 @@ from collections.abc import (
     Iterable,
     Generator,
     Mapping,
-    MutableMapping,
     Sequence,
+    MutableMapping,
+    MutableSequence,
+    MutableSet,
 )
 
 
@@ -41,6 +43,7 @@ from jsonc_sdict.share import (
     in_range,
     are_equal,
     getLogger,
+    _TODO,
 )
 from jsonc_sdict.weakList import WeakList
 
@@ -90,6 +93,8 @@ def get_item[K, D](
         noRaise = ()
     if not iterable(keys):
         return obj[keys]  # type: ignore
+    if not keys:
+        return obj
     try:
         for k in keys:
             obj = obj[k]
@@ -120,6 +125,8 @@ def get_attr[D](
         noRaise = ()
     if not iterable(keys):
         return getattr(obj, keys)  # type: ignore
+    if not keys:
+        return obj
     try:
         for k in keys:
             obj = getattr(obj, k)
@@ -155,10 +162,14 @@ def get_item_attr[D](
     if default is RAISE:
         noRaise = ()
     if not iterable(keys):
+        # if not container, just directly return (如果不是容器，直接返回)
         if hasattr(obj, "__getitem__"):
             return obj[keys]
         else:
             return getattr(obj, keys)  # type: ignore
+    if not keys:
+        # if at root, just return itself (如果是根容器，直接返回自自身)
+        return obj
     try:
         for k in keys:
             if hasattr(obj, "__getitem__"):
@@ -186,6 +197,24 @@ def set_item_attr(obj, keys: Sequence, value) -> None:
         else:
             setattr(obj, keys, value)
         return
+    if not keys:
+        # if at root, try to update itself (如果是根容器，尝试更新自己)
+        if hasattr(obj, "__setitem__"):
+            obj.clear()
+            if isinstance(obj, (MutableMapping, MutableSet)):  # need ordered_set
+                obj.update(value)
+            elif isinstance(obj, MutableSequence):
+                obj.extend(value)
+            else:
+                raise TypeError(
+                    f"Failed to update {type(obj)=} at root level ({keys=})"
+                )
+        else:
+            # TODO: need test
+            obj.__dict__.clear()
+            obj.__dict__.update(value.__dict__)
+        return
+
     parent = get_item_attr(obj, keys[:-1])
     k = keys[-1]
     if hasattr(obj, "__setitem__"):
@@ -451,10 +480,8 @@ def dictDict[CLS = "sdict"](
             if idKey is UNSET:
                 key = id(v)
                 if key in self:
-                    raise NotImplementedError(
-                        "rare edge case, click https://github.com/AClon314/jsonc-sdict/issues to report"
-                    )
-            elif getValue:
+                    raise _TODO
+            elif getValue:  # TODO
                 key = getValue(v, idKey)
         self.update({key: v})
         # gen.send(self) # TODO: 似乎执不执行，结果都一样？

@@ -1,11 +1,11 @@
 """shared static public lib"""
 
-from types import MappingProxyType
-
 import os
+import inspect
 import logging
-from collections.abc import Callable, Iterable, Generator, Mapping, Collection
-from typing import cast, Any, ParamSpec, TypeIs, TypeVar, FrozenSet, overload
+from collections.abc import Callable, Iterable, Generator, Mapping, Collection, Iterator
+from types import MappingProxyType
+from typing import cast, Any, ParamSpec, TypeIs, TypeVar, FrozenSet, overload, Never
 
 
 type RAISE = "RAISE"  # type:ignore
@@ -23,6 +23,10 @@ IS_DEBUG = LOG == "DEBUG" or os.environ.get("TERM_PROGRAM", None)
 logging.basicConfig(format="%(levelname)s %(asctime)s %(name)s:%(lineno)d\t%(message)s")
 if IS_DEBUG:
     LOG = "DEBUG"
+
+_TODO = NotImplementedError(
+    "rare edge case, click https://github.com/AClon314/jsonc-sdict/issues to report"
+)
 
 
 def getLogger(name: str | None = None) -> logging.Logger:
@@ -77,7 +81,7 @@ def unpack_method(
     return None
 
 
-def return_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> R:
+def return_of[Y, S, R](gen: Generator[Y, S, R] | Iterator[Y], send: S = None) -> R:
     """
     consume generator and get its return.
 
@@ -88,10 +92,14 @@ def return_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> R:
         GeneratorExit
         MemoryError
     """
+    isGen = isinstance(gen, Generator)
     try:
-        next(gen)
-        while True:
+        if not isGen or inspect.getgeneratorstate(gen) == inspect.GEN_CREATED:
+            next(gen)
+        else:
             gen.send(send)
+        while True:
+            gen.send(send) if isGen else next(gen)
     except StopIteration as e:
         return e.value
 
@@ -101,19 +109,27 @@ def return_from[Y, S, R](gen: Generator[Y, S, R]) -> Generator[Y, S, R]: ...
 
 
 @overload
+def return_from[Y](gen: Iterator[Y]) -> Generator[Y, Never, None]: ...
+
+
+@overload
 def return_from[R](gen: R) -> Generator[None, None, R]: ...
 
 
-def return_from[Y, S, R](gen: Generator[Y, S, R] | R) -> Generator[Y, S, R]:
+def return_from[Y, S, R = None](
+    gen: Generator[Y, S, R] | Iterator[Y] | R,
+) -> Generator[Y, S, R]:
     """usage: `yield from return_from(gen_or_func())`"""
-    if isinstance(gen, Generator):
+    if isinstance(gen, (Generator, Iterator)):
         ret: R = yield from gen
     else:
         ret = gen
     return ret
 
 
-def yields_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> tuple[list[Y], R]:
+def yields_of[Y, S, R = None](
+    gen: Generator[Y, S, R] | Iterator[Y], send: S = None
+) -> tuple[list[Y], R]:
     """
     consume generator and get its yields.
 
@@ -127,12 +143,16 @@ def yields_of[Y, S, R](gen: Generator[Y, S, R], send: S = None) -> tuple[list[Y]
         GeneratorExit
         MemoryError
     """
+    isGen = isinstance(gen, Generator)
     yields: list[Y] = []
     try:
-        v = next(gen)
+        if not isGen or inspect.getgeneratorstate(gen) == inspect.GEN_CREATED:
+            v = next(gen)
+        else:
+            v = gen.send(send)
         yields.append(v)
         while True:
-            v = gen.send(send)
+            v = gen.send(send) if isGen else next(gen)
             yields.append(v)
     except StopIteration as e:
         return yields, e.value
@@ -319,8 +339,8 @@ def copy_args(
 ) -> Callable[[Callable[..., TV]], Callable[PS, TV]]:
     """Decorator does nothing but returning the casted original function"""
 
-    def return_func(func: Callable[..., TV]) -> Callable[PS, TV]:
-        return cast(Callable[PS, TV], func)
+    def return_func(func: Callable[..., TV]) -> Callable[..., TV]:
+        return func
 
     return return_func
 
