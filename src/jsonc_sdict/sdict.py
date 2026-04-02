@@ -49,7 +49,7 @@ from jsonc_sdict.share import (
 from jsonc_sdict.weakList import WeakList
 
 if TYPE_CHECKING:
-    from jsonc_sdict.merge import _merge
+    from jsonc_sdict.merge import merge as _merge
 
 type Key[K = Any, V = sdict] = K | int
 """sdict[ dict:Key | list:int-index ]"""
@@ -71,6 +71,11 @@ type NestMapIter[K = Any, Leaf = Any] = (
 )
 
 Log = getLogger(__name__)
+
+
+def _type_alias_literal_args(alias) -> set[Any]:
+    target = getattr(alias, "__value__", alias)
+    return set(get_args(target))
 
 
 # ------------------------------------------------------------
@@ -663,10 +668,10 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             pass
         self.del_cache()
 
-    type _Cached = Literal["height", "childkeys", "unref"]
-    _cached = set(get_args(_Cached))
+    _Type_Cached = Literal["height", "childkeys", "unref"]
+    _cached = set(get_args(_Type_Cached))
 
-    def del_cache(self, without: Iterable[_Cached] = ()):
+    def del_cache(self, without: Iterable[_Type_Cached] = ()):
         todo = self._cached - set(without)
         for attr in todo:
             try:
@@ -675,7 +680,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
                 pass
 
     def __init_subclass__(cls) -> None:
-        cls._cached = set(get_args(cls._Cached))
+        cls._cached = set(get_args(cls._Type_Cached))
 
     @property
     def v(self):
@@ -1056,7 +1061,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         yieldIf: YieldIfFunc | None = None,
         getChild: GetChildFunc = get_children,
         readonly=False,
-        setValue=set_item,
+        setValue=set_item_attr,
         **kwargs: Unpack[_KwargsDfs3],
     ) -> Generator[Self, Any, Self | Any]:
         """
@@ -1169,7 +1174,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         from leaves
         currently not implement signal dict like angular, so you need manually del cache
         """
-        return max(k for k in self.keys_flat())
+        return max((node.depth for node in self.dfs(readonly=True)), default=0)
 
     @cached_property
     def childkeys(self):

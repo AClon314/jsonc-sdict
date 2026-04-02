@@ -30,11 +30,6 @@ def compat_sdict_cache():
         sdict._cached = old
 
 
-def make_sdict(data=None, **kwargs):
-    kwargs.setdefault("deep", False)
-    return sdict(data, **kwargs)
-
-
 def test_nested_helper_accessors_work_on_dicts_and_objects():
     class Box:
         pass
@@ -73,13 +68,13 @@ def test_nested_helper_mutators_work_in_place():
 
 def test_unref_handles_nested_sdict_and_const_mode():
     wrapped = {
-        "left": make_sdict({"x": 1}),
-        "right": [make_sdict({"y": 2}), 3],
+        "left": sdict({"x": 1}),
+        "right": [sdict({"y": 2}), 3],
     }
 
     assert unref(wrapped) == {"left": {"x": 1}, "right": [{"y": 2}, 3]}
 
-    frozen = unref(make_sdict({"a": {"b": 1}, "arr": [2, 3]}), const=True)
+    frozen = unref(sdict({"a": {"b": 1}, "arr": [2, 3]}), const=True)
     assert isinstance(frozen, MappingProxyType)
     assert isinstance(frozen["a"], MappingProxyType)
     assert frozen["arr"] == (2, 3)
@@ -110,7 +105,7 @@ def test_un_dictDict_restores_nested_and_root_lists():
 
 
 def test_sdict_shallow_mapping_operations():
-    data = make_sdict({"a": 1, "b": 2, "c": 2})
+    data = sdict({"a": 1, "b": 2, "c": 2})
 
     assert data["a"] == 1
     assert data.index("b") == 1
@@ -130,7 +125,7 @@ def test_sdict_shallow_mapping_operations():
 
 
 def test_sdict_merge_merges_into_self_and_forwards_kwargs():
-    data = make_sdict({"children": [{"id": 1, "name": "1", "old": None}]})
+    data = sdict({"children": [{"id": 1, "name": "1", "old": None}]})
 
     result = data.merge(
         {"children": [{"id": 1, "name": "2", "new": ""}, {"id": 2, "name": "3"}]},
@@ -151,7 +146,7 @@ def test_sdict_merge_merges_into_self_and_forwards_kwargs():
 
 def test_sdict_ref_mode_reads_and_writes_nested_values():
     data = [{"a": 1}, [2, 3]]
-    ref_view = make_sdict(ref=data)
+    ref_view = sdict(ref=data)
 
     assert ref_view.use_ref is True
     assert ref_view.v is data
@@ -162,10 +157,288 @@ def test_sdict_ref_mode_reads_and_writes_nested_values():
     assert data == [{"a": 1}, [2, 9]]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="deep rebuild still passes parent=... into sdict.__init__",
-)
-def test_sdict_deep_build_is_not_ready():
-    sdict({"a": {"b": 1}})
+def test_sdict_init_deep_builds_nested_sdict():
+    data = sdict({"a": {"b": 1}})
+
+    assert isinstance(data["a"], sdict)
+    assert data["a", "b"] == 1
+
+
+def test_sdict_rebuild_wraps_nested_mapping_after_shallow_init():
+    data = sdict({"a": {"b": 1}}, deep=False)
+
+    assert isinstance(data["a"], dict)
+
+    data.rebuild()
+
+    assert isinstance(data["a"], sdict)
+
+
+def test_sdict_init_subclass_populates_cached_fields():
+    class ChildSDict(sdict):
+        pass
+
+    assert ChildSDict._cached == {"height", "childkeys", "unref"}
+
+
+def test_sdict_del_cache_keeps_requested_cached_values():
+    data = sdict({"a": {"b": 1}})
+    _ = data.childkeys
+    _ = data.unref
+
+    data.del_cache(without=("childkeys",))
+
+    assert "childkeys" in data.__dict__
+    assert "unref" not in data.__dict__
+
+
+def test_sdict_v_returns_self_in_data_mode():
+    data = sdict({"a": 1}, deep=False)
+
+    assert data.v is data
+
+
+def test_sdict_unref_property_returns_plain_nested_data():
+    data = sdict({"a": {"b": 1}})
+
+    assert data.unref == {"a": {"b": 1}}
+
+
+def test_sdict_is_nestKeys_excludes_strings():
+    assert sdict.is_nestKeys(("a", "b")) is True
+    assert sdict.is_nestKeys("ab") is False
+
+
+def test_sdict_getitem_method_returns_default_for_missing_path():
+    data = sdict({"a": {"b": 1}}, deep=False)
+
+    assert data.getitem(["a", "missing"], default="fallback") == "fallback"
+
+
+def test_sdict_setitem_method_updates_nested_value():
+    data = sdict({"a": {"b": 1}}, deep=False)
+
+    data.setitem(["a", "b"], 2)
+
+    assert data["a"]["b"] == 2
+
+
+def test_sdict_dunder_setitem_updates_nested_value():
+    data = sdict({"a": {"b": 1}}, deep=False)
+
+    data["a", "b"] = 3
+
+    assert data["a"]["b"] == 3
+
+
+def test_sdict_delitem_method_deletes_nested_value():
+    data = sdict({"a": {"b": 1}}, deep=False)
+
+    data.delitem(["a", "b"])
+
+    assert data == {"a": {}}
+
+
+def test_sdict_dunder_delitem_deletes_nested_value():
+    data = sdict({"a": {"b": 1}}, deep=False)
+
+    del data["a", "b"]
+
+    assert data == {"a": {}}
+
+
+def test_sdict_hash_uses_identity():
+    data = sdict({"a": 1}, deep=False)
+
+    assert hash(data) == id(data)
+
+
+def test_sdict_repr_obeys_repr_flag():
+    data = sdict({"a": 1}, deep=False)
+
+    assert repr(data) == "{'a': 1}"
+
+    data.repr = True
+
+    assert repr(data) == "sdict({'a': 1})"
+
+
+def test_sdict_ior_mutates_in_place():
+    data = sdict({"a": 1}, deep=False)
+
+    result = data
+    result |= {"b": 2}
+
+    assert result is data
+    assert data == {"a": 1, "b": 2}
+
+
+def test_sdict_pop_removes_key():
+    data = sdict({"a": 1, "b": 2}, deep=False)
+
+    data.pop("a")
+
+    assert list(data.items()) == [("b", 2)]
+
+
+def test_sdict_popitem_removes_last_pair():
+    data = sdict({"a": 1, "b": 2}, deep=False)
+
+    data.popitem(last=True)
+
+    assert list(data.items()) == [("a", 1)]
+
+
+def test_sdict_update_merges_mapping():
+    data = sdict({"a": 1}, deep=False)
+
+    data.update({"b": 2})
+
+    assert data == {"a": 1, "b": 2}
+
+
+def test_sdict_clear_empties_mapping():
+    data = sdict({"a": 1}, deep=False)
+
+    data.clear()
+
+    assert data == {}
+
+
+def test_sdict_are_equal_respects_key_order():
+    left = sdict({"b": 2, "a": 1}, deep=False)
+
+    assert sdict.are_equal(left, {"b": 2, "a": 1}) is True
+    assert sdict.are_equal(left, {"a": 1, "b": 2}) is False
+
+
+def test_sdict_equal_respects_key_order():
+    data = sdict({"b": 2, "a": 1}, deep=False)
+
+    assert data.equal({"b": 2, "a": 1}) is True
+    assert data.equal({"a": 1, "b": 2}) is False
+
+
+def test_sdict_rename_key_replaces_key_name():
+    data = sdict({"a": 1, "b": 2}, deep=False)
+
+    data.rename_key("a", "A")
+
+    assert list(data.items()) == [("A", 1), ("b", 2)]
+
+
+def test_sdict_rename_key_re_applies_regex_substitution():
+    data = sdict({"aa": 1, "ab": 2}, deep=False)
+
+    data.rename_key_re(r"^a", "z")
+
+    assert list(data.items()) == [("za", 1), ("zb", 2)]
+
+
+def test_sdict_keys_flat_readonly_returns_keypaths():
+    data = sdict({"a": {"b": 1}}, deep=False)
+
+    assert list(data.keys_flat(readonly=True)) == [(), ("a",)]
+
+
+def test_sdict_values_flat_readonly_returns_nodes():
+    data = sdict({"a": {"b": 1}}, deep=False)
+    values = list(data.values_flat(readonly=True))
+
+    assert [value.v for value in values] == [{"a": {"b": 1}}, {"b": 1}]
+
+
+def test_sdict_items_flat_readonly_returns_pairs():
+    data = sdict({"a": {"b": 1}}, deep=False)
+    items = list(data.items_flat(readonly=True))
+
+    assert [(key, value.v) for key, value in items] == [
+        ((), {"a": {"b": 1}}),
+        (("a",), {"b": 1}),
+    ]
+
+
+def test_sdict_dfs_readonly_yields_nested_nodes():
+    data = sdict({"a": {"b": 1}}, deep=False)
+    nodes = list(data.dfs(readonly=True))
+
+    assert [node.v for node in nodes] == [{"a": {"b": 1}}, {"b": 1}]
+    assert nodes[1].keypath == ("a",)
+
+
+def test_sdict_insert_by_index_places_items_before_target():
+    data = sdict({"a": 1, "c": 3}, deep=False)
+
+    data.insert({"b": 2}, index=1)
+
+    assert list(data.items()) == [("a", 1), ("b", 2), ("c", 3)]
+
+
+def test_sdict_index_finds_key_and_value_positions():
+    data = sdict({"a": 1, "b": 2}, deep=False)
+
+    assert data.index("b") == 1
+    assert data.index(value=2) == 1
+
+
+def test_sdict_i_to_k_returns_key_for_index():
+    data = sdict({"a": 1, "b": 2}, deep=False)
+
+    assert data.i_to_k(1) == "b"
+
+
+def test_sdict_v_to_k_yields_all_matching_keys():
+    data = sdict({"a": 1, "b": 2, "c": 2}, deep=False)
+
+    assert tuple(data.v_to_k(2)) == ("b", "c")
+
+
+def test_sdict_sort_orders_keys_with_callable():
+    data = sdict({"bbb": 1, "a": 2, "cc": 3}, deep=False)
+
+    data.sort(key=len)
+
+    assert list(data.keys()) == ["a", "cc", "bbb"]
+
+
+def test_sdict_count_counts_matching_values():
+    data = sdict({"a": 1, "b": 2, "c": 2}, deep=False)
+
+    assert data.count(2) == 2
+
+
+def test_sdict_keypath_reports_node_path():
+    data = sdict({"a": {"b": 1}})
+
+    assert data["a"].keypath == ("a",)
+
+
+def test_sdict_parent_reports_parent_node():
+    data = sdict({"a": {"b": 1}})
+
+    assert data["a"].parent is data
+
+
+def test_sdict_depth_reports_node_depth():
+    data = sdict({"a": {"b": 1}})
+
+    assert data["a"].depth == 1
+
+
+def test_sdict_childkeys_returns_root_and_direct_children():
+    data = sdict({"a": {"b": 1}})
+
+    assert len(data.childkeys) == 2
+    assert data.childkeys[1].parent is data
+
+
+def test_sdict_dfs_default_mode_yields_nested_nodes():
+    data = sdict({"a": {"b": 1}}, deep=False)
+    nodes = list(data.dfs())
+
+    assert [node.v for node in nodes] == [{"a": {"b": 1}}, {"b": 1}]
+    assert nodes[1].keypath == ("a",)
+
+
+def test_sdict_height_reports_max_nested_depth():
+    assert sdict({"a": {"b": 1}}, deep=False).height == 1
