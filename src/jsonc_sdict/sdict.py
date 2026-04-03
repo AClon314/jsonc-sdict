@@ -12,7 +12,6 @@ from functools import cached_property, partial
 from types import MappingProxyType
 from typing import (
     cast,
-    get_args,
     overload,
     Any,
     Self,
@@ -40,6 +39,7 @@ from jsonc_sdict.share import (
     RAISE,
     NONE,
     copy_args,
+    values_of_type,
     iterable,
     in_range,
     are_equal,
@@ -71,11 +71,6 @@ type NestMapIter[K = Any, Leaf = Any] = (
 )
 
 Log = getLogger(__name__)
-
-
-def _type_alias_literal_args(alias) -> set[Any]:
-    target = getattr(alias, "__value__", alias)
-    return set(get_args(target))
 
 
 # ------------------------------------------------------------
@@ -603,7 +598,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
     type IterAsMap = Iterable[tuple[K, V]]
 
-    class _KwargsInit(TypedDict, total=False):
+    class Kwargs(TypedDict, total=False):
         # data: Mapping[K, V] | None
         ref: R | None
         deep: bool
@@ -669,10 +664,10 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         self.del_cache()
 
     _Type_Cached = Literal["height", "childkeys", "unref"]
-    _cached = set(get_args(_Type_Cached))
+    _cached = values_of_type(_Type_Cached)
 
     def del_cache(self, without: Iterable[_Type_Cached] = ()):
-        todo = self._cached - set(without)
+        todo = set(self._cached) - set(without)
         for attr in todo:
             try:
                 delattr(self, attr)
@@ -680,7 +675,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
                 pass
 
     def __init_subclass__(cls) -> None:
-        cls._cached = set(get_args(cls._Type_Cached))
+        cls._cached = values_of_type(cls._Type_Cached)
 
     @property
     def v(self):

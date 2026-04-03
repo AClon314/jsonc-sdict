@@ -21,16 +21,15 @@ from dataclasses import dataclass
 from functools import cached_property
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence, Iterable
-from typing import Literal, Any, Unpack, get_args, cast, overload
-from warnings import deprecated
+from typing import Any, Unpack, Literal, cast, overload
 
-from jsonc_sdict.share import UNSET, getLogger, iterable
+from jsonc_sdict.share import UNSET, getLogger, iterable, values_of_type
 from jsonc_sdict.sdict import sdict, set_item, get_item, unref
 
 Log = getLogger(__name__)
 BeforeSep = Literal["", "\n", ",", "k", ":", "v"]
 """k : v , \n"""
-before_seps: tuple[BeforeSep] = get_args(BeforeSep)
+before_seps = values_of_type(BeforeSep)
 
 
 @dataclass
@@ -54,8 +53,8 @@ class BakeComment:
     trail_newline: bool = False
 
 
-def json_dumps(obj: Any) -> str:
-    return json.dumps(obj, ensure_ascii=False, indent=2, cls=CompactJSONEncoder)
+def json_dumps(obj: Any, indent: int | None = 2) -> str:
+    return json.dumps(obj, ensure_ascii=False, indent=indent, cls=CompactJSONEncoder)
 
 
 class jsoncDict[K = str, V = Any](sdict[K, V]):
@@ -76,18 +75,18 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     ```
     """
 
-    _CommentPrefix = Literal["/*", "//", "/-"]
-    _comment_prefixes: tuple[_CommentPrefix, ...] = get_args(_CommentPrefix)
-    _single_comment: tuple[_CommentPrefix, ...] = ("//",)
+    _Type_CommentPrefix = Literal["/*", "//", "/-"]
+    _comment_prefixes = values_of_type(_Type_CommentPrefix)
+    _single_comment: tuple[_Type_CommentPrefix, ...] = ("//",)
     """must be ordered longest to shortest for find()"""
     _auto_count = 0
     """for unique keyname gen"""
     _auto_suffix = "-auto"
 
-    type _Cached = Literal["height", "childkeys", "unref", "body", "data"]
+    _Type_Cached = Literal["body", "data"] | sdict._Type_Cached
 
     def __init_subclass__(cls) -> None:
-        cls._comment_prefixes = get_args(cls._CommentPrefix)
+        cls._comment_prefixes = values_of_type(cls._Type_CommentPrefix)
         # TODO: sort _single_comment, longest at first
 
     @overload
@@ -99,7 +98,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         slash_dash: bool = True,
         auto_indent: bool = True,
         has_comment: bool = True,
-        **kwargs: Unpack[sdict._KwargsInit],
+        **kwargs: Unpack[sdict.Kwargs],
     ): ...
 
     @overload
@@ -111,7 +110,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         slash_dash: bool = True,
         auto_indent: bool = True,
         has_comment: bool = True,
-        **kwargs: Unpack[sdict._KwargsInit],
+        **kwargs: Unpack[sdict.Kwargs],
     ): ...
 
     def __init__(
@@ -122,7 +121,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         slash_dash: bool = True,
         auto_indent: bool = True,
         has_comment: bool = True,
-        **kwargs: Unpack[sdict._KwargsInit],
+        **kwargs: Unpack[sdict.Kwargs],
     ):
         """
         Args:
@@ -138,6 +137,8 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         """
         self._loads_raw = loads
         self._dumps_raw = dumps
+        self.slash_dash = slash_dash
+        """if key_name starts_with `/-`, like `/-mynode` will comment the whole tree node, see [kdl](https://kdl.dev/) config style"""
 
         self.auto_indent = auto_indent
         """mainly for multi-line comment. if False, then you need manually handle indent"""
@@ -195,53 +196,6 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
                 return CommentData(prefix=prefix, before=sep, name=key[len(prefix) :])
 
     is_comment = split_key
-
-    # TODO: deprecated
-    # def to_inner_key_batch(self, raw: str) -> str:
-    #     """
-    #     deep convert existedKey that start_with `/` (comment_prefix), by add `SEED` suffix, used at init phase before loads()
-    #     Args:
-    #         raw: to sync inner key change, raw is **required**
-    #     Returns:
-    #         raw: added SEED as suffix
-    #     """
-
-    #     def _replace_raw_key_token(old_key: str, new_key: str, text: str) -> str:
-    #         if text is None or old_key == new_key:
-    #             return text
-    #         # compability for json5/hjson, if keyname is not in "quote"
-    #         # old_key_token = self.dumps_raw(old_key)
-    #         # new_key_token = self.dumps_raw(new_key)
-    #         return text.replace(old_key, new_key)
-
-    #     def _need_touch(key: Any) -> bool:
-    #         if not isinstance(key, str):
-    #             return False
-    #         if self.to_inner_key(key) != key:
-    #             return True
-    #         if raw is None or not key.endswith(self.SEED):
-    #             return False
-    #         raw_key = key[: -len(self.SEED)]
-    #         return any(raw_key.startswith(prefix) for prefix in self._comment_prefixes)
-
-    #     for parent in self.dfs(
-    #         yieldIf=lambda parent, _: any(_need_touch(k) for k in parent.keys())
-    #     ):
-    #         for key in tuple(parent.keys()):
-    #             if not isinstance(key, str):
-    #                 continue
-    #             inner_key = self.to_inner_key(key)
-    #             if inner_key != key:
-    #                 parent.rename_key(key, inner_key, deep=False)
-    #                 raw = _replace_raw_key_token(key, inner_key, raw)
-    #                 key = inner_key
-    #             if key.endswith(self.SEED):
-    #                 raw_key = key[: -len(self.SEED)]
-    #                 if any(
-    #                     raw_key.startswith(prefix) for prefix in self._comment_prefixes
-    #                 ):
-    #                     raw = _replace_raw_key_token(raw_key, key, raw)
-    #     return raw
 
     def _match_single_comment_prefix(self, text: str, idx: int) -> str | None:
         for prefix in self._single_comment:
@@ -311,7 +265,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     def _autoKey(self):
         return f"{self._auto_count}{self._auto_suffix}"
 
-    def _new_autoKey(self, prefix: _CommentPrefix) -> CommentData:
+    def _new_autoKey(self, prefix: _Type_CommentPrefix) -> CommentData:
         name = f"{self._autoKey}"
         self._auto_count += 1
         return CommentData(prefix=prefix, name=name)
@@ -733,16 +687,6 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         self.rebuild()
         return body
 
-    @cached_property
-    def data(self):
-        """data only, no comment"""
-        # TODO
-        return
-
-    @cached_property
-    def body(self) -> str:
-        return self.dumps()
-
     def dumps(self, obj: Any | None = None, depth=0) -> str:
         """restore"""
         if obj is None:
@@ -752,6 +696,16 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         # TODO: implement this
 
         return out
+
+    @cached_property
+    def data(self):
+        """data only, no comment"""
+        # TODO
+        return
+
+    @cached_property
+    def body(self) -> str:
+        return self.dumps()
 
     @property
     def full(self) -> str:
@@ -793,7 +747,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         insert the `update` dict before `key` or `index`
 
         Args:
-            has_comment: if set to `False`, treat **all keys as dataKeys** forcibly, recored by `self.forcedataKeys`
+            has_comment: if set to `False`, treat **all keys as dataKeys** forcibly, recorded by `self.forcedataKeys`
 
         Raises:
             KeyError: raise if any of comments's keys already in `self.forcedataKeys`.
@@ -865,137 +819,6 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         else:
             self.forceDataKeys.update({k for k in update if self.split_key(k)})
             super().insert(update, key, index, after)
-
-    # TODO: deprecated
-    # def insert_comment(
-    #     self,
-    #     comments: Mapping[K, V],
-    #     key: K | UNSET = UNSET,
-    #     index: int | None = None,
-    #     after=False,
-    # ):
-    #     """
-    #     Raises:
-    #         KeyError: raise if any of comments's keys already in `self.forcedataKeys`.
-    #             Suggest use another keyname.
-
-    #     comment-keyname rules:
-
-    #     | Internal key prefix | Means | Restored shape |
-    #     | --- | --- | --- |
-    #     | `//` | single-line comment, inline mode | after current value/comma |
-    #     | `//\\n` | single-line comment, line-above mode | independent line before next key/value |
-    #     | `/*` | block comment (default) | inline block comment |
-    #     | `/*\\n` | block comment with trailing newline mode | rendered with line break behavior |
-    #     | `/*,` | block comment before comma | placed before comma of current item |
-    #     | `/*k` | block comment before key slot | before JSON key token |
-    #     | `/*:` | block comment before colon slot | between key and value |
-    #     | `/*v` | block comment before value slot | after colon, before value |
-    #     | `/-` | slash_dash comment | comments out a whole subtree (KDL-like style) |
-    #     """
-    #     # 内部会判断当前节点是dict还是list类型
-    #     if not comments:
-    #         return
-
-    #     raw_items = list(comments.items())
-
-    #     if self.use_ref:
-    #         arr = self.v
-    #         if arr is None:
-    #             raise TypeError("list target is None")
-    #         if not isinstance(arr, list):
-    #             raise TypeError(
-    #                 f"insert_comment() list target must be list, got {type(arr)!r}"
-    #             )
-    #         target_index = len(arr) if index is None else index
-    #         if key is not UNSET and index is None:
-    #             if not isinstance(key, int):
-    #                 raise TypeError(
-    #                     f"list comment key must be int index, got {type(key)!r}"
-    #                 )
-    #             target_index = key + (1 if after else 0)
-    #         target_index = max(0, min(target_index, len(arr)))
-    #         for offset, (k, v) in enumerate(raw_items):
-    #             inner_k = self.to_inner_key(k) if isinstance(k, str) else k
-    #             arr.insert(target_index + offset, {inner_k: v})
-    #         self.del_cache()
-    #         return
-
-    #     def insert_with_comment_key(
-    #         update: Mapping[Any, Any],
-    #         key: Any | UNSET = UNSET,
-    #         index: int | None = None,
-    #         after=False,
-    #     ):
-    #         if key is UNSET and index is None:
-    #             raise ValueError("key or index must be set")
-    #         if not update:
-    #             return
-
-    #         keys_before_update = list(self.keys())
-    #         target_index = -1
-    #         if index is not None:
-    #             target_index = index if index >= 0 else len(keys_before_update) + index
-    #             target_index = max(0, min(target_index, len(keys_before_update)))
-    #         elif key is not UNSET:
-    #             lookup_key = self.to_inner_key(key) if isinstance(key, str) else key
-    #             try:
-    #                 target_index = self.index(cast(K, lookup_key))
-    #                 if after:
-    #                     target_index += 1
-    #             except (ValueError, TypeError) as e:
-    #                 raise KeyError(key, "not found") from e
-
-    #         inserted_keys: set[Any] = set()
-    #         for k, v in update.items():
-    #             # TODO: self.v ? but maybe not
-    #             self[k] = v
-    #             actual_k = self.to_inner_key(k) if isinstance(k, str) else k
-    #             self.move_to_end(actual_k)
-    #             inserted_keys.add(actual_k)
-
-    #         for k in keys_before_update[target_index:]:
-    #             if k not in inserted_keys:
-    #                 self.move_to_end(k)
-    #         self.del_cache()
-
-    #     line_above_prefixes = tuple(f"{p}\n" for p in self._single_comment)
-    #     single_inline = tuple(self._single_comment)
-    #     before_comments: OrderedDict[Any, Any] = OrderedDict()
-    #     after_comments: OrderedDict[Any, Any] = OrderedDict()
-    #     for k, v in raw_items:
-    #         inner_k = self.to_inner_key(k) if isinstance(k, str) else k
-    #         if (
-    #             isinstance(inner_k, str)
-    #             and inner_k.startswith(single_inline)
-    #             and not inner_k.startswith(line_above_prefixes)
-    #         ):
-    #             after_comments[k] = v
-    #         else:
-    #             before_comments[k] = v
-
-    #     if index is not None:
-    #         if before_comments:
-    #             insert_with_comment_key(before_comments, index=index, after=False)
-    #         if after_comments:
-    #             insert_with_comment_key(
-    #                 after_comments,
-    #                 index=index + len(before_comments),
-    #                 after=False,
-    #             )
-    #         return
-    #     if key is UNSET:
-    #         tail = len(self)  # TODO: self.v ?
-    #         if before_comments:
-    #             insert_with_comment_key(before_comments, index=tail, after=False)
-    #             tail += len(before_comments)
-    #         if after_comments:
-    #             insert_with_comment_key(after_comments, index=tail, after=False)
-    #         return
-    #     if before_comments:
-    #         insert_with_comment_key(before_comments, key=key, after=False)
-    #     if after_comments:
-    #         insert_with_comment_key(after_comments, key=key, after=True)
 
     def comment_out(self, values: Iterable | None = None):
         """

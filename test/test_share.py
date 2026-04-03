@@ -1,6 +1,8 @@
+from typing import Literal
+
 import pytest
 
-from jsonc_sdict.share import in_range, len_slice, return_of, yields_of
+from jsonc_sdict.share import in_range, len_slice, return_of, values_of_type, yields_of
 
 
 def test_return_helpers_consume_generators():
@@ -41,3 +43,11 @@ def test_len_slice():
     assert len_slice(5, slice(10, 20)) == 0
     assert len_slice(7, slice(None)) == 7
     assert len_slice(0, slice(1, 3)) == 0
+
+
+def test_values_of_type_unwraps_nested_type_alias_union():
+    type Base = Literal[1, 2]
+    type Nested = Base | Literal[2, 3]
+    type Wrapped = Nested | Base
+
+    assert values_of_type(Wrapped) == (1, 2, 3)

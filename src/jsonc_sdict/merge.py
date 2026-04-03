@@ -89,8 +89,8 @@ MergeOrder = Literal[
     "^,old-^,new-^",
     "^,new-^,old-^",
 ]
-# merge_orders = get_args(MergeOrder)
-# merge_order_bases = get_args(MergeOrderBase)
+# merge_orders = values_of_type(MergeOrder)
+# merge_order_bases = values_of_type(MergeOrderBase)
 
 type Type_MergeEnd = Literal["old", "new", "del"]
 type IsType[T, *TS] = type[T] | tuple[*TS] | Callable[[Any], bool]

@@ -5,7 +5,19 @@ import inspect
 import logging
 from collections.abc import Callable, Iterable, Generator, Mapping, Collection, Iterator
 from types import MappingProxyType
-from typing import cast, Any, ParamSpec, TypeIs, TypeVar, FrozenSet, overload, Never
+from typing import (
+    get_args,
+    overload,
+    Any,
+    Never,
+    Union,
+    TypeIs,
+    TypeVar,
+    Literal,
+    FrozenSet,
+    ParamSpec,
+    TypeAliasType,
+)
 
 
 type RAISE = "RAISE"  # type:ignore
@@ -328,6 +340,25 @@ def are_equal(
         )
 
     return a == b
+
+
+def typeof[T](alias: T) -> T:
+    while type(alias) is TypeAliasType:
+        alias = alias.__value__
+    return alias
+
+
+def unpack_type[T](typ: T) -> Generator[T, Never, None]:
+    typ = typeof(typ)
+    if type(typ) is Union:
+        for member in get_args(typ):
+            yield from unpack_type(member)
+        return
+    yield from get_args(typ)
+
+
+def values_of_type[T](typ: T) -> tuple[T, ...]:
+    return tuple(dict.fromkeys(unpack_type(typ)))
 
 
 PS = ParamSpec("PS")
