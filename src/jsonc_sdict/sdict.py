@@ -2,11 +2,10 @@
 super dict, signal dict...
 """
 
-from dataclasses import dataclass
-
 import re
 import itertools
 from weakref import ref
+from dataclasses import dataclass
 from collections import OrderedDict
 from functools import cached_property, partial
 from types import MappingProxyType
@@ -39,7 +38,7 @@ from jsonc_sdict.share import (
     RAISE,
     NONE,
     copy_args,
-    values_of_type,
+    args_of_type,
     iterable,
     in_range,
     are_equal,
@@ -51,10 +50,10 @@ from jsonc_sdict.weakList import WeakList
 if TYPE_CHECKING:
     from jsonc_sdict.merge import merge as _merge
 
-type Key[K = Any, V = sdict] = K | int
-"""sdict[ dict:Key | list:int-index ]"""
-type KeyPaths[K = Any, V = Any] = tuple[list[Key[K, V]], ...]
-"""[[parent1, parent2(depth==0)], [me,(depth==1)], [child1, child2, (depth==3) ...]]"""
+type Key[K = Any] = K | int
+"""dict:Key | list:int-index"""
+type KeyPaths[K = Any] = dict[Key[K], list[Key[K]]]
+"""OrderedDict = {parent: [child1, child2], child1: [grandson1], child2: []}"""
 type PathCount = tuple[int, ...]
 type Node[K = int, V = Any] = Mapping[K, V] | Iterable[V]
 
@@ -309,7 +308,6 @@ class KwargsDfs(_KwargsDfs3, total=False):
     # obj: Node
     maxDepth: int | float
     cls: type[Self] | None
-    yieldIf: YieldIfFunc | None
     getChild: GetChildFunc
     readonly: bool
     setValue: SetValueFunc
@@ -319,20 +317,18 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     obj: Node[K, V],
     maxDepth=float("inf"),
     cls: type[CLS] | None = None,
-    yieldIf: YieldIfFunc | None = None,
     getChild: GetChildFunc = get_children,
     readonly=False,
     setValue: SetValueFunc = set_item_attr,
     *,
     parents: WeakList = WeakList(),
-    keypaths: KeyPaths = (),
+    keypaths: KeyPaths = {},
     pathCount: PathCount = (0,),
 ) -> Generator[CLS]:
     """
     do NOT update scaned/yielded data while iterating.
     Args:
         maxDepth: stop digging if deeper
-        yieldIf: yield only if yield_if(self, node) is True
         getChild: see `get_children()`
         readonly: if True, will
             - not update sdict's `parent`, `keypath`, `pathCount` if already dfs(sdict)
@@ -388,9 +384,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             Log.error(f"{cls=} is not sdict, fallback to positional init", exc_info=e)
             self = cls(data if data else ref)
     self = cast(sdict, self)
-    newSelf = None
-    if yieldIf is None or yieldIf(self, obj):
-        newSelf = yield self
+    newSelf = yield self
     if newSelf is not None:
         self = None if newSelf is NONE else newSelf
     children = getChild(self, obj)
@@ -398,18 +392,23 @@ def dfs[K = int, V = Any, CLS = "sdict"](
         if not iterable(v):
             continue
         _parent = WeakList((self,))
-        _keypaths = (*keypaths, [k])
+        # _keypaths = (*keypaths, [k])  # TODO
+        if keypaths:
+            last_key = next(reversed(keypaths))
+            last_value = keypaths[last_key]
+            assert isinstance(last_value, list)
+
+        keypaths[k] = []
         _pathCount = (*pathCount, i)
         ret = yield from dfs(
             v,
             maxDepth=maxDepth,
             cls=cls,
-            yieldIf=yieldIf,
             getChild=getChild,
             readonly=readonly,
             setValue=setValue,
             parents=_parent,
-            keypaths=_keypaths,
+            keypaths=keypaths,
             pathCount=_pathCount,
         )
         if not readonly:
@@ -603,7 +602,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         ref: R | None
         deep: bool
         parent: WeakList[Self]
-        keypaths: KeyPaths[Any, Self]
+        keypaths: KeyPaths[Any]
         pathCount: PathCount
         getChild: GetChildFunc
 
@@ -614,7 +613,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         *,
         deep=True,
         parents: WeakList[Self] = WeakList(),
-        keypaths: KeyPaths[Any, Self] = (),
+        keypaths: KeyPaths[Any] = {},
         pathCount: PathCount = (0,),
         getChild: GetChildFunc = get_children,
     ):
@@ -645,7 +644,6 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """can storage pydantic_model_data, list_data..."""
         self.parents = parents
         self.keypaths = keypaths
-        """from root. Use this when "object shared(same `id()`) in python" happens, otherwise I recommend you use `keypath` without 's'."""
         self.pathCount = pathCount
         if deep:
             self.rebuild()
@@ -663,11 +661,20 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             pass
         self.del_cache()
 
-    _Type_Cached = Literal["height", "childkeys", "unref"]
-    _cached = values_of_type(_Type_Cached)
+    _Type_Cached = Literal["unref", "keypaths", "keypath", "height", "childkeys"]
+    _cached = args_of_type(_Type_Cached)
+    _cached_parent = ("keypaths", "keypath")
+    _cached_child = ("unref", "childkeys")
 
-    def del_cache(self, without: Iterable[_Type_Cached] = ()):
-        todo = set(self._cached) - set(without)
+    def del_cache(
+        self,
+        without: Iterable[_Type_Cached] = (),
+        only: Iterable[_Type_Cached] | None = None,
+    ):
+        if only is None:
+            todo = set(self._cached) - set(without)
+        else:
+            todo = only
         for attr in todo:
             try:
                 delattr(self, attr)
@@ -675,7 +682,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
                 pass
 
     def __init_subclass__(cls) -> None:
-        cls._cached = values_of_type(cls._Type_Cached)
+        cls._cached = args_of_type(cls._Type_Cached)
 
     @property
     def v(self):
@@ -741,14 +748,14 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
     def __setitem__(self, key: K | Sequence[K] | slice | Any, value):
         if isinstance(key, slice):
-            raise NotImplementedError("TODO")  # TODO: batch
+            raise _TODO  # TODO: batch
             for i in self.keys_flat(slice=key):
                 self[i] = value
         elif self.use_ref or self.is_nestKeys(key):
             self.setitem(key, value)
         else:
             super().__setitem__(key, value)
-        self.del_cache()
+        self.del_cache(only=self._cached_child)
 
     def delitem(self, key: Sequence[K], at=UNSET):
         """see `del_item_attr()`"""
@@ -756,14 +763,18 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
     def __delitem__(self, key: K | Sequence[K] | slice | Any):
         if isinstance(key, slice):
-            raise NotImplementedError("TODO")  # TODO: batch
+            raise _TODO  # TODO: batch
             for i in self.keys_flat(slice=key):
                 del self[i]
         elif self.use_ref or self.is_nestKeys(key):
             self.delitem(key)
         else:
             super().__delitem__(key)
-        self.del_cache()
+        self.del_cache(only=self._cached_child)
+
+    def __del__(self):
+        [c.del_cache() for c in self.childkeys]  # TODO self.childkeys
+        # TODO
 
     def __hash__(self):
         return id(self)
@@ -782,30 +793,30 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         if not value:
             return self
         super().__ior__(value)
-        self.del_cache()
+        self.del_cache(only=self._cached_child)
         return self
 
     @copy_args(OrderedDict.pop)
     def pop(self, key):
         super().pop(key)
-        self.del_cache()
+        self.del_cache(only=self._cached_child)
 
     @copy_args(OrderedDict.popitem)
     def popitem(self, last):
         super().popitem(last)
-        self.del_cache()
+        self.del_cache(only=self._cached_child)
 
     @copy_args(OrderedDict.update)
     def update(self, m):
         if not m:
             return
         super().update(m)
-        self.del_cache()
+        self.del_cache(only=self._cached_child)
 
     @copy_args(OrderedDict.clear)
     def clear(self):
         super().clear()
-        self.del_cache()
+        self.del_cache(only=self._cached_child)
 
     # TODO: move_to_end, 暂时不做
 
@@ -833,7 +844,6 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             deep: if True, will deep rename. if False and old_key not in self, will **raise KeyError**
             can_rename: callback guard. return False to skip this parent
         """
-
         if new is UNSET:
             if old is UNSET:
                 raise ValueError("old or new must be set")
@@ -891,7 +901,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             if _can_rename(parent):
                 changed = _rename_one(parent, old, new)
             if changed:
-                self.del_cache()
+                self.del_cache(only=self._cached_parent)
             return self
 
         if not deep:
@@ -900,15 +910,15 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             if _can_rename(self):
                 changed = _rename_one(self, old, new)
             if changed:
-                self.del_cache()
+                self.del_cache(only=self._cached_parent)
             return self
 
-        for parent in self.dfs(yieldIf=lambda parent, _: old in parent):
-            if not _can_rename(parent):
+        for parent in self.dfs():
+            if not (old in parent and _can_rename(parent)):
                 continue
             changed = _rename_one(parent, old, new) or changed
         if changed:
-            self.del_cache()
+            self.del_cache(only=self._cached_parent)  # TODO: need test
         return self
 
     def rename_key_re(
@@ -965,13 +975,14 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
                 raise KeyError(old, "not found")
             changed = _rename_parent(self)
             if changed:
-                self.del_cache()
+                self.del_cache(only=self._cached_parent)
             return self
 
-        for parent in self.dfs(yieldIf=lambda parent, _: bool(_rename_plan(parent))):
-            changed = _rename_parent(parent) or changed
+        for parent in self.dfs():
+            if _rename_plan(parent):
+                changed = _rename_parent(parent) or changed
         if changed:
-            self.del_cache()
+            self.del_cache(only=self._cached_parent)
         return self
 
     def merge(
@@ -1053,7 +1064,6 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     def dfs(
         self,
         maxDepth=float("inf"),
-        yieldIf: YieldIfFunc | None = None,
         getChild: GetChildFunc = get_children,
         readonly=False,
         setValue=set_item_attr,
@@ -1066,7 +1076,6 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             self.v,
             cls=self.__class__,  # type: ignore
             maxDepth=maxDepth,
-            yieldIf=yieldIf,
             getChild=getChild,
             readonly=readonly,
             setValue=setValue,
@@ -1107,7 +1116,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         for k in keys_before_update[target_index:]:
             if k not in update:
                 self.move_to_end(k)
-        self.del_cache()
+        self.del_cache(only=self._cached_child)
 
     def index(self, key: K | UNSET = UNSET, value: V | UNSET = UNSET) -> int:
         if key is UNSET and value is UNSET:
@@ -1150,18 +1159,24 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     def count(self, value: V) -> int:
         return list(self.values()).count(value)
 
-    @property
+    @cached_property
+    def keypaths(self) -> KeyPaths[K]:
+        """from root. Use this when "object shared(same `id()`) in python" happens, otherwise I recommend you use `keypath` without 's'."""
+        # TODO: "图"结构 ... } .. } .
+        return {}
+
+    @cached_property
     def keypath(self) -> tuple:
         return list(itertools.product(*self.keypaths))[-1]
 
     @property
-    def parent(self):
+    def parent(self) -> Any | None:
         return self.parents[-1] if self.parents else None
 
     @property
     def depth(self):
         """from root"""
-        return len(self.keypaths)  # len(self.pathCount)
+        return len(self.keypath)  # len(self.pathCount)
 
     @cached_property
     def height(self):
@@ -1177,4 +1192,4 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         `del sdict.childkeys` to refresh cache
         currently not implement signal dict like angular, so you need manually del cache
         """
-        return tuple(dfs(self.v, maxDepth=1))
+        return tuple(dfs(self.v, maxDepth=1))  # TODO: 逻辑不对

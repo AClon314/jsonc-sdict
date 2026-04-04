@@ -13,7 +13,6 @@ from typing import (
     Union,
     TypeIs,
     TypeVar,
-    Literal,
     FrozenSet,
     ParamSpec,
     TypeAliasType,
@@ -357,7 +356,7 @@ def unpack_type[T](typ: T) -> Generator[T, Never, None]:
     yield from get_args(typ)
 
 
-def values_of_type[T](typ: T) -> tuple[T, ...]:
+def args_of_type[T](typ: T) -> tuple[T, ...]:
     return tuple(dict.fromkeys(unpack_type(typ)))
 
 

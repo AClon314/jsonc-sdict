@@ -20,23 +20,25 @@ import json
 from dataclasses import dataclass
 from functools import cached_property
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence, Iterable
-from typing import Any, Unpack, Literal, cast, overload
+from collections.abc import Callable, Mapping, Sequence, Iterable, MutableSequence
+from typing import Any, Unpack, Literal, cast, overload, Self
+from warnings import deprecated
 
-from jsonc_sdict.share import UNSET, getLogger, iterable, values_of_type
+from jsonc_sdict.share import UNSET, getLogger, iterable, args_of_type, copy_args
 from jsonc_sdict.sdict import sdict, set_item, get_item, unref
 
 Log = getLogger(__name__)
-BeforeSep = Literal["", "\n", ",", "k", ":", "v"]
+_Type_BeforeSep = Literal["", "\n", ",", "k", ":", "v"]
 """k : v , \n"""
-before_seps = values_of_type(BeforeSep)
+before_seps = args_of_type(_Type_BeforeSep)
+_Type_DataOrComment = Literal["data", "comment"]
 
 
 @dataclass
 class CommentData:
     prefix: "hjsonDict._CommentPrefix"
     name: str
-    before: BeforeSep = ""
+    before: _Type_BeforeSep = ""
 
     def __str__(self):
         if self.prefix == "/*":
@@ -76,17 +78,19 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     """
 
     _Type_CommentPrefix = Literal["/*", "//", "/-"]
-    _comment_prefixes = values_of_type(_Type_CommentPrefix)
+    _comment_prefixes: tuple[_Type_CommentPrefix, ...] = args_of_type(
+        _Type_CommentPrefix
+    )  # type: ignore
     _single_comment: tuple[_Type_CommentPrefix, ...] = ("//",)
     """must be ordered longest to shortest for find()"""
     _auto_count = 0
     """for unique keyname gen"""
     _auto_suffix = "-auto"
 
-    _Type_Cached = Literal["body", "data"] | sdict._Type_Cached
+    _Type_Cached = Literal["body"] | sdict._Type_Cached
 
     def __init_subclass__(cls) -> None:
-        cls._comment_prefixes = values_of_type(cls._Type_CommentPrefix)
+        cls._comment_prefixes = args_of_type(cls._Type_CommentPrefix)
         # TODO: sort _single_comment, longest at first
 
     @overload
@@ -130,6 +134,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
                 **required** when `raw` is str
             dumps: same as `loads`
             slash_dash: if key_name starts_with `/-`, like `/-mynode` will comment the whole tree node, see [kdl](https://kdl.dev/) config style
+            auto_indent: auto-indent for multi-line comment. if False, then you need manually handle indent
             has_comment:
                 False: treat **all comment_prefix keys as data key, not comment** key, by **recorded in `self.forceDataKeys`**. Or you promise there's no comment key.
                 True: if key name satisfy the comment-keyname rule, do nothing internally.
@@ -141,17 +146,20 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         """if key_name starts_with `/-`, like `/-mynode` will comment the whole tree node, see [kdl](https://kdl.dev/) config style"""
 
         self.auto_indent = auto_indent
-        """mainly for multi-line comment. if False, then you need manually handle indent"""
+        """auto-indent for multi-line comment. if False, then you need manually handle indent"""
 
         self.header, self.footer = "", ""
         self.bodyEdge = None, None
         self.forceDataKeys: set[str | tuple[str, ...]] = set()
+        """tuple[str,...] will match keypath, while str will match the current node's key"""
         if not slash_dash:
             styles = list(self._comment_prefixes)
             styles.remove("/-")
             self._comment_prefixes = tuple(styles)
 
         if isinstance(raw, str):
+            if loads is None:
+                raise ValueError("missing arg `loads` when `raw` is str")
             if has_comment is None:
                 has_comment = True
             data = self.loads_raw(raw)
@@ -164,7 +172,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
             raw = ""
             # data(dict): have un-converted comments
             # raw(str): empty
-        # 其实raw(str)并不重要，我们只关心data(dict)
+        # NOTE: 其实raw(str)并不重要，我们只关心 data(dict)
         # `sdict.__init__` may call `self.__setitem__`, so setup attrs before this call.
         super().__init__(data, **kwargs)
         self.loads(raw, has_comment=has_comment)
@@ -181,21 +189,30 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     def dumps_raw(self, obj: Any) -> str:
         return self._dumps_raw(obj)
 
-    @classmethod
-    def split_key(cls, key: str | Any) -> CommentData | None:
-        """return CommentData if is comment, else None"""
+    def split_key(self, key: str | Any = UNSET) -> CommentData | None:
+        """
+        return CommentData if is comment, else None
+
+        Args:
+            key: if UNSET, fallback to itself keypath(`self.keypath[-1]`)
+        """
+        if key is UNSET:
+            key = self.keypath[-1]
         if not (isinstance(key, str)):
             return
-        for prefix in cls._comment_prefixes:
+        for prefix in self._comment_prefixes:
             if key.startswith(prefix):
-                sep = cast(BeforeSep, key[len(prefix)])
+                sep = cast(_Type_BeforeSep, key[len(prefix)])
                 # single-comment only 2 modes: `//` and `//\n` (or `#` and `#\n`)
-                reset_single = prefix in cls._single_comment and sep != "\n"
+                reset_single = prefix in self._single_comment and sep != "\n"
                 if reset_single or sep not in before_seps or prefix == "/-":
                     sep = ""
                 return CommentData(prefix=prefix, before=sep, name=key[len(prefix) :])
 
-    is_comment = split_key
+    @deprecated("also you can use `split_key()`")
+    @copy_args(split_key)
+    def is_comment(self, *args, **kw) -> CommentData | None:
+        return self.split_key(*args, **kw)
 
     def _match_single_comment_prefix(self, text: str, idx: int) -> str | None:
         for prefix in self._single_comment:
@@ -225,17 +242,6 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
             if prefix.startswith(single):
                 return f"{single}{val}"
         return f"{prefix}{val}"
-
-    def _is_list_comment_item(self, value: Any) -> tuple[CommentData, Any] | None:
-        if not isinstance(value, Mapping) or len(value) != 1:
-            return None
-        ((k, val),) = value.items()
-        parts = self.split_key(k)
-        if parts is None:
-            return None
-        if parts.prefix == "/-":
-            return None
-        return parts, val
 
     def _find_root_start(self, n: int, code: str) -> int:
         i = 0
@@ -277,6 +283,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         raw = raw.replace("\r", "")
         # n = len(raw)
         # comment_index = 0
+        # TODO: 搜索token, 鸭子类型支持读取 半支持round-trip的 注释元信息 __COMMENTS__
         for obj in self.dfs():
             if isinstance(obj.v, Mapping):
                 for key in list(obj.keys()):
@@ -288,403 +295,6 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
                 for v in obj.v:
                     pass
 
-        def append_obj_comment(obj: OrderedDict, prefix: str, value: str):
-            obj[str(self._new_autoKey(prefix))] = value
-
-        def append_list_comment(arr: list, prefix: str, value: str):
-            arr.append({str(self._new_autoKey(prefix)): value})
-
-        def line_start(pos: int) -> int:
-            return raw.rfind("\n", 0, pos) + 1
-
-        def line_end(pos: int) -> int:
-            j = raw.find("\n", pos)
-            return n if j < 0 else j
-
-        def has_code_before_on_line(pos: int) -> bool:
-            return any(not ch.isspace() for ch in code[line_start(pos) : pos])
-
-        def has_code_after_on_line(pos: int) -> bool:
-            return any(not ch.isspace() for ch in code[pos : line_end(pos)])
-
-        def scan_comments(text: str) -> tuple[str, list[BakeComment]]:
-            chars = list(text)
-            tokens: list[BakeComment] = []
-            i = 0
-            in_str = False
-            escaped = False
-            while i < n:
-                c = text[i]
-                if in_str:
-                    if escaped:
-                        escaped = False
-                    elif c == "\\":
-                        escaped = True
-                    elif c == '"':
-                        in_str = False
-                    i += 1
-                    continue
-                if c == '"':
-                    in_str = True
-                    i += 1
-                    continue
-                single_prefix = self._match_single_comment_prefix(text, i)
-                if single_prefix is not None:
-                    start = i
-                    i += len(single_prefix)
-                    body_start = i
-                    while i < n and text[i] != "\n":
-                        i += 1
-                    end = i
-                    newline = i < n and text[i] == "\n"
-                    tokens.append(
-                        BakeComment(
-                            prefix=single_prefix,
-                            value=text[body_start:end],
-                            start=start,
-                            end=end,
-                            trail_newline=newline,
-                        )
-                    )
-                    for j in range(start, end):
-                        chars[j] = " "
-                    continue
-                if text.startswith("/*", i):
-                    start = i
-                    body_start = i + 2
-                    mark = text.find("*/", body_start)
-                    if mark < 0:
-                        raise ValueError("unterminated block comment")
-                    end = mark + 2
-                    tokens.append(
-                        BakeComment(
-                            prefix="/*",
-                            value=text[body_start:mark],
-                            start=start,
-                            end=end,
-                        )
-                    )
-                    for j in range(start, end):
-                        if chars[j] != "\n":
-                            chars[j] = " "
-                    i = end
-                    continue
-                i += 1
-            return "".join(chars), tokens
-
-        def skip_ws(pos: int, end: int | None = None) -> int:
-            limit = n if end is None else end
-            while pos < limit and code[pos].isspace():
-                pos += 1
-            return pos
-
-        def find_container_end(start: int) -> int:
-            open_ch = code[start]
-            close_ch = "}" if open_ch == "{" else "]"
-            depth = 1
-            i = start + 1
-            in_str = False
-            escaped = False
-            while i < n:
-                c = code[i]
-                if in_str:
-                    if escaped:
-                        escaped = False
-                    elif c == "\\":
-                        escaped = True
-                    elif c == '"':
-                        in_str = False
-                    i += 1
-                    continue
-                if c == '"':
-                    in_str = True
-                    i += 1
-                    continue
-                if c == open_ch:
-                    depth += 1
-                elif c == close_ch:
-                    depth -= 1
-                    if depth == 0:
-                        return i + 1
-                i += 1
-            raise ValueError(f"unterminated container that starts at index {start}")
-
-        def pop_comments(left: int, right: int) -> list[BakeComment]:
-            nonlocal comment_index
-            out: list[BakeComment] = []
-            while comment_index < len(comments) and comments[comment_index].end <= left:
-                comment_index += 1
-            while comment_index < len(comments):
-                token = comments[comment_index]
-                if token.start >= right:
-                    break
-                if token.end <= right:
-                    out.append(token)
-                    comment_index += 1
-                    continue
-                break
-            return out
-
-        def find_key_in_object(key: str, cursor: int, close: int) -> int:
-            key_token = self.dumps_raw(key)
-            search = cursor
-            while True:
-                pos = code.find(key_token, search, close)
-                if pos < 0:
-                    raise ValueError(f"key {key!r} not found near index {cursor}")
-                after_key = skip_ws(pos + len(key_token), close)
-                if after_key < close and code[after_key] == ":":
-                    return pos
-                search = pos + 1
-
-        def find_scalar_end(start: int, close: int) -> int:
-            if start >= close:
-                raise ValueError("unexpected EOF while parsing scalar value")
-            if code[start] == '"':
-                i = start + 1
-                escaped = False
-                while i < close:
-                    c = code[i]
-                    if escaped:
-                        escaped = False
-                    elif c == "\\":
-                        escaped = True
-                    elif c == '"':
-                        return i + 1
-                    i += 1
-                raise ValueError("unterminated string value")
-            i = start
-            while i < close and code[i] not in ",}]":
-                i += 1
-            while i > start and code[i - 1].isspace():
-                i -= 1
-            return i
-
-        def next_sig_char(pos: int, close: int) -> str:
-            j = skip_ws(pos, close)
-            return "" if j >= close else code[j]
-
-        def prev_sig_char(pos: int, start: int) -> str:
-            j = pos - 1
-            while j >= start:
-                if code[j].isspace():
-                    j -= 1
-                    continue
-                return code[j]
-            return ""
-
-        def emit_obj_comments(
-            obj: OrderedDict,
-            tokens: list[BakeComment],
-            mode: Literal["before_key", "before_colon", "before_value", "after_value"],
-            start: int,
-            close: int,
-        ):
-            for token in tokens:
-                if token.prefix == "/*":
-                    if mode == "before_colon":
-                        prefix = "/*:"
-                    elif mode == "before_value":
-                        prefix = "/*v"
-                    elif mode == "after_value":
-                        prefix = (
-                            "/*," if next_sig_char(token.end, close) == "," else "/*\n"
-                        )
-                    else:
-                        prev_sig = prev_sig_char(token.start, start)
-                        line_only = (not has_code_before_on_line(token.start)) and (
-                            not has_code_after_on_line(token.end)
-                        )
-                        at_line_tail_after_comma = (
-                            prev_sig == "," and not has_code_after_on_line(token.end)
-                        )
-                        prefix = (
-                            "/*\n" if (line_only or at_line_tail_after_comma) else "/*k"
-                        )
-                    append_obj_comment(obj, prefix, token.value)
-                    continue
-                line_above = mode == "before_key" and (
-                    not has_code_before_on_line(token.start)
-                )
-                if mode == "after_value" and not has_code_before_on_line(token.start):
-                    line_above = True
-                prefix = token.prefix + ("\n" if line_above else "")
-                value = token.value
-                append_obj_comment(obj, prefix, value)
-
-        def emit_array_comments(
-            arr: list[Any],
-            tokens: list[BakeComment],
-            mode: Literal["before_value", "after_value"],
-        ):
-            for token in tokens:
-                if token.prefix == "/*":
-                    if mode == "before_value":
-                        line_only = (not has_code_before_on_line(token.start)) and (
-                            not has_code_after_on_line(token.end)
-                        )
-                        prefix = "/*\n" if line_only else "/*"
-                    else:
-                        prefix = "/*"
-                    append_list_comment(arr, prefix, token.value)
-                    continue
-                line_above = mode == "before_value" and (
-                    not has_code_before_on_line(token.start)
-                )
-                prefix = token.prefix + ("\n" if line_above else "")
-                value = token.value
-                append_list_comment(arr, prefix, value)
-
-        def parse_value(node: Any, start: int, close: int):
-            pos = skip_ws(start, close)
-            if isinstance(node, Mapping):
-                return parse_object(node, pos, close)
-            if iterable(node):
-                return parse_array(node, pos, close)
-            end = find_scalar_end(pos, close)
-            return node, end
-
-        def parse_object(node: Mapping[str, Any], start: int, close: int):
-            if start >= close or code[start] != "{":
-                raise ValueError(f"expected '{{' at index {start}")
-            end = find_container_end(start)
-            end_close = end - 1
-            obj: OrderedDict[str, Any] = OrderedDict()
-            cursor = start + 1
-
-            for key, node_val in node.items():
-                if not isinstance(key, str):
-                    raise TypeError(f"object key must be str, got {type(key)!r}")
-                key_pos = find_key_in_object(key, cursor, end_close)
-                emit_obj_comments(
-                    obj,
-                    pop_comments(cursor, key_pos),
-                    mode="before_key",
-                    start=start + 1,
-                    close=end_close,
-                )
-
-                key_token = self.dumps_raw(key)
-                key_end = key_pos + len(key_token)
-                colon_pos = skip_ws(key_end, end_close)
-                emit_obj_comments(
-                    obj,
-                    pop_comments(key_end, colon_pos),
-                    mode="before_colon",
-                    start=start + 1,
-                    close=end_close,
-                )
-                if colon_pos >= end_close or code[colon_pos] != ":":
-                    raise ValueError(f"expected ':' after key {key!r}")
-
-                value_pos = skip_ws(colon_pos + 1, end_close)
-                emit_obj_comments(
-                    obj,
-                    pop_comments(colon_pos + 1, value_pos),
-                    mode="before_value",
-                    start=start + 1,
-                    close=end_close,
-                )
-                parsed_val, value_end = parse_value(node_val, value_pos, end_close)
-                obj[key] = parsed_val
-
-                delim_pos = skip_ws(value_end, end_close)
-                emit_obj_comments(
-                    obj,
-                    pop_comments(value_end, delim_pos),
-                    mode="after_value",
-                    start=start + 1,
-                    close=end_close,
-                )
-                if delim_pos < end_close and code[delim_pos] == ",":
-                    cursor = delim_pos + 1
-                else:
-                    cursor = delim_pos
-
-            emit_obj_comments(
-                obj,
-                pop_comments(cursor, end_close),
-                mode="before_key",
-                start=start + 1,
-                close=end_close,
-            )
-            return obj, end
-
-        def parse_array(node: Iterable[Any], start: int, close: int):
-            if start >= close or code[start] != "[":
-                raise ValueError(f"expected '[' at index {start}")
-            end = find_container_end(start)
-            end_close = end - 1
-            arr: list[Any] = []
-            cursor = start + 1
-
-            for item in node:
-                value_pos = skip_ws(cursor, end_close)
-                emit_array_comments(
-                    arr, pop_comments(cursor, value_pos), "before_value"
-                )
-                parsed_item, value_end = parse_value(item, value_pos, end_close)
-                arr.append(parsed_item)
-
-                delim_pos = skip_ws(value_end, end_close)
-                emit_array_comments(
-                    arr, pop_comments(value_end, delim_pos), "after_value"
-                )
-                if delim_pos < end_close and code[delim_pos] == ",":
-                    cursor = delim_pos + 1
-                else:
-                    cursor = delim_pos
-
-            emit_array_comments(arr, pop_comments(cursor, end_close), "before_value")
-            return arr, end
-
-        code, comments = scan_comments(raw)
-        src_start = self._find_root_start(n, code)
-        src_end = find_container_end(src_start)
-
-        root_data = unref(self.v)
-        if (
-            (not root_data)
-            or (code[src_start] == "{" and not isinstance(root_data, Mapping))
-            or (code[src_start] == "[" and not iterable(root_data))
-        ):
-            try:
-                root_data = json.loads(
-                    code[src_start:src_end], object_pairs_hook=OrderedDict
-                )
-            except json.JSONDecodeError:
-                if code[src_start] == "{":
-                    root_data = OrderedDict()
-                else:
-                    root_data = []
-
-        while (
-            comment_index < len(comments) and comments[comment_index].end <= src_start
-        ):
-            comment_index += 1
-
-        root, parsed_end = parse_value(root_data, src_start, src_end)
-        if parsed_end < src_end:
-            if isinstance(root, list):
-                emit_array_comments(
-                    root, pop_comments(parsed_end, src_end), "before_value"
-                )
-            elif isinstance(root, Mapping):
-                emit_obj_comments(
-                    cast(OrderedDict, root),
-                    pop_comments(parsed_end, src_end),
-                    mode="before_key",
-                    start=src_start + 1,
-                    close=src_end - 1,
-                )
-
-        body = self.dumps_raw(root)
-        self.bodyEdge = src_start, src_end
-        self.header = raw[:src_start]
-        self.footer = raw[src_end:]
-        self.clear()
-        self.update(root)
-        self.rebuild()
         return body
 
     def dumps(self, obj: Any | None = None, depth=0) -> str:
@@ -697,11 +307,17 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
 
         return out
 
-    @cached_property
-    def data(self):
+    def data(self) -> Self:
         """data only, no comment"""
         # TODO
-        return
+        view = self.__class__(self)
+        return view
+
+    def comments(self) -> Self:
+        """comments only, no data"""
+        # TODO
+        view = self.__class__(self)
+        return view
 
     @cached_property
     def body(self) -> str:
@@ -820,22 +436,66 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
             self.forceDataKeys.update({k for k in update if self.split_key(k)})
             super().insert(update, key, index, after)
 
-    def comment_out(self, values: Iterable | None = None):
+    def switch(
+        self,
+        From: _Type_DataOrComment | None = None,
+        to: _Type_DataOrComment | Literal["invert"] = "comment",
+        children: Iterable | None = None,
+        unpack: bool = True,
+    ):
         """
+        Args:
+            From: filter
+            to: "invert" means toggle
+            children: current node's children item
+            unpack: wheter remove prefix(`/-` or `//`...), or extract value from temporary commentDict if switch to comment.
+
         Usage:
         ```python
-        jc[key0, key1].comment_out() # to slash_dash comment `/-`
-        jc[key0, key1].comment_out([1,2]) # only comment value 1,2 as `/* 1, 2 */`
+        jc[key0, key1].switch() # to slash_dash comment `/-`
+
+        # jc[key0,key1] = [0,1,2,3]
+        jc[key0, key1].switch([1,2]) # only comment out `1,2` to `/* 1, 2 */`
+        # assert jc[key0,key1] == [0,{"//\\n1":1},{"//\\n2":2},3]
         ```
         """
         # TODO: implement this in the future
-        if values is None:
-            self.rename_key(new=f"/-{self.keypaths[-1][-1]}")
+        if children is None:
+            wasComment = self.is_comment()
+            if to == "invert":
+                to = "data" if wasComment else "comment"
+            if wasComment and to == "data":
+                parent = self.parent
+                # 去掉prefix与before，只保留name
+                if unpack and parent is not None:
+                    # TODO: 应该规定parent只能为sdict类型
+                    isParentMap = (
+                        isinstance(parent, sdict)
+                        and isinstance(parent.v, Mapping)
+                        or isinstance(parent, Mapping)
+                    )
+                    if isParentMap:
+                        wasComment.prefix = ""
+                        wasComment.before = ""
+                        self.rename_key(new=str(wasComment))
+                    else:
+                        parent = cast(MutableSequence, parent)
+
+                self.forceDataKeys.add(str(wasComment))
+            elif not wasComment and to == "comment":
+                if self.slash_dash:
+                    prefix = "/-"
+                else:
+                    prefix = "//\n"
+                self.rename_key(new=f"{prefix}{self.keypath[-1]}")
+                if str(wasComment) in self.forceDataKeys:
+                    self.forceDataKeys.remove(str(wasComment))
             return
-        is_list = iterable(self.v)
-        for v in values:
-            for k in self.v_to_k(v):
-                if is_list:
+
+        isContainer = iterable(self.v)
+        for v in children:
+            for k in self.v_to_k(v):  # TODO
+                if isContainer:
                     pass  # TODO: value → {"/*counterSEED": value}
                 else:
                     self.rename_key(k, "/*counterSEED")
@@ -922,9 +582,6 @@ class hjsonDict[K = str, V = Any](jsoncDict[K, V]):
                 line[2:] if line.startswith("  ") else line for line in inner
             )
         return rendered
-
-
-Type_jsonc = jsoncDict | type[jsoncDict]
 
 
 class CompactJSONEncoder(json.JSONEncoder):

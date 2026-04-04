@@ -2,7 +2,7 @@ from typing import Literal
 
 import pytest
 
-from jsonc_sdict.share import in_range, len_slice, return_of, values_of_type, yields_of
+from jsonc_sdict.share import in_range, len_slice, return_of, args_of_type, yields_of
 
 
 def test_return_helpers_consume_generators():
@@ -50,4 +50,4 @@ def test_values_of_type_unwraps_nested_type_alias_union():
     type Nested = Base | Literal[2, 3]
     type Wrapped = Nested | Base
 
-    assert values_of_type(Wrapped) == (1, 2, 3)
+    assert args_of_type(Wrapped) == (1, 2, 3)

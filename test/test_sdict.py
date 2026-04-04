@@ -178,7 +178,7 @@ def test_sdict_init_subclass_populates_cached_fields():
     class ChildSDict(sdict):
         pass
 
-    assert ChildSDict._cached == {"height", "childkeys", "unref"}
+    assert ChildSDict._cached == ("height", "childkeys", "unref")
 
 
 def test_sdict_del_cache_keeps_requested_cached_values():
