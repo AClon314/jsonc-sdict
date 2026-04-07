@@ -3,7 +3,16 @@
 import os
 import inspect
 import logging
-from collections.abc import Callable, Iterable, Generator, Mapping, Collection, Iterator
+from itertools import islice
+from collections.abc import (
+    Callable,
+    Iterable,
+    Generator,
+    Mapping,
+    Collection,
+    Iterator,
+    Sized,
+)
 from types import MappingProxyType
 from typing import (
     get_args,
@@ -56,6 +65,13 @@ def isFlatIterable[V](obj: Iterable[V] | Any) -> TypeIs[Iterable[V]]:
     return iterable(obj) and not any(
         iterable(x) for x in (obj.values() if isinstance(obj, Mapping) else obj)
     )
+
+
+def iSlice[T](iter: Sized[T], stop: int | None = -1) -> islice[T]:
+    """by default remove the last one"""
+    if stop is not None and stop < 0:
+        stop = max(0, len(iter) + stop)
+    return islice(iter, stop)
 
 
 @overload

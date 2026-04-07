@@ -1,8 +1,10 @@
+from weakref import WeakKeyDictionary, WeakValueDictionary
 from types import MappingProxyType
 
 import pytest
 
 from jsonc_sdict.sdict import (
+    all_path,
     dictDict,
     del_item,
     del_item_attr,
@@ -16,7 +18,7 @@ from jsonc_sdict.sdict import (
     un_dictDict,
     unref,
 )
-from jsonc_sdict.share import return_of
+from jsonc_sdict.share import NONE, return_of
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +45,96 @@ def test_nested_helper_accessors_work_on_dicts_and_objects():
     assert get_attr(root, ["child", "value"]) == 9
     assert get_item_attr(root, ["child", "value"]) == 9
     assert get_item(data, ["missing"], default="fallback") == "fallback"
+
+
+def test_all_path_returns_node_key_dict_for_leaf_path():
+    class Node:
+        def __init__(self, name):
+            self.name = name
+
+        def __repr__(self):
+            return self.name
+
+    root = Node("root")
+    mid = Node("mid")
+    leaf = Node("leaf")
+    graph = WeakKeyDictionary(
+        {
+            root: WeakValueDictionary({"a": mid}),
+            mid: WeakValueDictionary({"b": leaf}),
+        }
+    )
+
+    paths = list(all_path(graph))
+
+    assert len(paths) == 1
+    path = paths[0]
+    assert list(path.items()) == [(root, "a"), (mid, "b"), (leaf, NONE)]
+    assert list(path.nodePath) == [root, mid, leaf]
+    assert list(path.keypath) == ["a", "b"]
+    assert not hasattr(path, "cycleStartNode")
+
+
+def test_all_path_keeps_root_and_child_order_for_multiple_roots():
+    class Node:
+        def __init__(self, name):
+            self.name = name
+
+        def __repr__(self):
+            return self.name
+
+    root1 = Node("root1")
+    root2 = Node("root2")
+    shared = Node("shared")
+    leaf1 = Node("leaf1")
+    leaf2 = Node("leaf2")
+    graph = WeakKeyDictionary(
+        {
+            root1: WeakValueDictionary({"a": shared, "b": leaf1}),
+            root2: WeakValueDictionary({"c": leaf2}),
+            shared: WeakValueDictionary({"d": leaf2}),
+        }
+    )
+
+    paths = list(all_path(graph))
+
+    assert [[node.name for node in path.nodePath] for path in paths] == [
+        ["root1", "shared", "leaf2"],
+        ["root1", "leaf1"],
+        ["root2", "leaf2"],
+    ]
+    assert [list(path.keypath) for path in paths] == [["a", "d"], ["b"], ["c"]]
+
+
+def test_all_path_marks_cycle_start_without_appending_none_leaf():
+    class Node:
+        def __init__(self, name):
+            self.name = name
+
+        def __repr__(self):
+            return self.name
+
+    left = Node("left")
+    right = Node("right")
+    graph = WeakKeyDictionary(
+        {
+            left: WeakValueDictionary({"ab": right}),
+            right: WeakValueDictionary({"ba": left}),
+        }
+    )
+
+    paths = list(all_path(graph))
+
+    assert len(paths) == 2
+
+    first, second = paths
+    assert list(first.items()) == [(left, "ab"), (right, "ba")]
+    assert first.cycleStartNode() is left
+    assert first.cycleStartKey == "ab"
+
+    assert list(second.items()) == [(right, "ba"), (left, "ab")]
+    assert second.cycleStartNode() is right
+    assert second.cycleStartKey == "ba"
 
 
 def test_nested_helper_mutators_work_in_place():

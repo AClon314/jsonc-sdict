@@ -4,12 +4,13 @@ super dict, signal dict...
 
 import re
 import itertools
-from weakref import ref
+from weakref import WeakKeyDictionary, ref, WeakValueDictionary
 from dataclasses import dataclass
 from collections import OrderedDict
 from functools import cached_property, partial
 from types import MappingProxyType
 from typing import (
+    Never,
     cast,
     overload,
     Any,
@@ -30,6 +31,7 @@ from collections.abc import (
     MutableMapping,
     MutableSequence,
     MutableSet,
+    Iterator,
 )
 
 
@@ -44,6 +46,7 @@ from jsonc_sdict.share import (
     are_equal,
     getLogger,
     _TODO,
+    iSlice,
 )
 from jsonc_sdict.weakList import WeakList
 
@@ -52,8 +55,10 @@ if TYPE_CHECKING:
 
 type Key[K = Any] = K | int
 """dict:Key | list:int-index"""
-type KeyPaths[K = Any] = dict[Key[K], list[Key[K]]]
-"""OrderedDict = {parent: [child1, child2], child1: [grandson1], child2: []}"""
+type RelationGraph[K = Any, V = "sdict"] = WeakKeyDictionary[
+    V, WeakValueDictionary[Key[K], V]
+]
+"""{parent_1: {parentKeys_2: self_3}}, eg: {root1: {key2: son3, key22: son3}, son3: {key4: grandson5}}}, strictly require root -> parent -> children order."""
 type PathCount = tuple[int, ...]
 type Node[K = int, V = Any] = Mapping[K, V] | Iterable[V]
 
@@ -219,7 +224,7 @@ def set_item_attr(obj, keys: Sequence, value) -> None:
             obj.__dict__.update(value.__dict__)
         return
 
-    parent = get_item_attr(obj, keys[:-1])
+    parent = get_item_attr(obj, iSlice(keys))
     k = keys[-1]
     if hasattr(obj, "__setitem__"):
         parent[k] = value  # type: ignore
@@ -229,7 +234,7 @@ def set_item_attr(obj, keys: Sequence, value) -> None:
 
 def set_item(obj, keys: Sequence, value) -> None:
     """see `get_item()` & `get_item_attr()`"""
-    parent = get_item(obj, keys[:-1])
+    parent = get_item(obj, iSlice(keys))
     parent[keys[-1]] = value  # type: ignore
 
 
@@ -241,7 +246,7 @@ def del_item_attr(obj, keys: Sequence) -> None:
         else:
             delattr(obj, keys)
         return
-    parent = get_item_attr(obj, keys[:-1])
+    parent = get_item_attr(obj, iSlice(keys))
     k = keys[-1]
     if hasattr(obj, "__delitem__"):
         del parent[k]  # type: ignore
@@ -251,8 +256,96 @@ def del_item_attr(obj, keys: Sequence) -> None:
 
 def del_item(obj, keys: Sequence) -> None:
     """see `set_item_attr()`"""
-    parent = get_item(obj, keys[:-1])
+    parent = get_item(obj, iSlice(keys))
     del parent[keys[-1]]  # type: ignore
+
+
+# ------------------------------------------------------------
+# pathGraph
+# ------------------------------------------------------------
+
+
+class NodeKeyDict[K, N = "sdict"](WeakKeyDictionary[N, K]):
+    """
+    - `.keys()`/`.nodePath` will get node-path
+    - `.values()[:-1]`/`.keypath` will get keypath, without the last empty key.
+    """
+
+    cycleStartNode: ref[N]
+
+    @property
+    def cycleStartKey(self) -> None | K:
+        node = self.cycleStartNode()
+        return None if node is None else self[node]
+
+    @property
+    def nodePath(self) -> Iterator[N]:
+        return self.keys()
+
+    @property
+    def keypath(self) -> list[K]:
+        return list(self.values())[:-1]
+
+
+def all_path[K, V = "sdict"](
+    graph: RelationGraph[K, V],
+) -> Generator[NodeKeyDict[K, V], Never, list[NodeKeyDict[K, V]]]:
+    """
+    Enumerate all root-to-leaf paths in `graph`. Similar to `networkx.DiGraph.all_simple_path()`.
+
+    Each yielded path is an ordered weak mapping of `{node: key_in_node}`:
+    - `{leaf_node: NONE}` for a normal leaf
+    - `cycleStartNode = ref(node)` when the path ends by closing a cycle
+
+    The persistent relation cache stays weakly referenced in `graph`, while DFS state
+    here uses a plain stack and an active-node index so push/pop order and cycle
+    detection remain explicit.
+    """
+    if not graph:
+        return []
+    roots: list[NodeKeyDict[K | int | NONE, V]] = []
+    graph_node_ids = {id(node) for node in graph.keys()}
+    child_node_ids = {
+        id(child) for children in graph.values() for child in children.values()
+    }
+    start_nodes = [node for node in graph.keys() if id(node) not in child_node_ids]
+    if not start_nodes:
+        start_nodes = list(graph.keys())
+
+    path: list[tuple[V, K | int | NONE]] = []
+    active_index: dict[int, int] = {}
+
+    def _emit(end: V | None = None, cycle_start: V | None = None):
+        result = NodeKeyDict(path)
+        if end is not None:
+            result[end] = NONE
+        if cycle_start is not None:
+            result.cycleStartNode = ref(cycle_start)
+        roots.append(result)
+        return result
+
+    def _walk(node: V):
+        node_id = id(node)
+        active_index[node_id] = len(path)
+        children = graph.get(node)
+        if not children:
+            yield _emit(end=node)
+        else:
+            for edge_key, child in children.items():
+                path.append((node, edge_key))
+                child_id = id(child)
+                if child_id in active_index:
+                    yield _emit(cycle_start=child)
+                elif child_id in graph_node_ids:
+                    yield from _walk(child)
+                else:
+                    yield _emit(end=child)
+                path.pop()
+        del active_index[node_id]
+
+    for root in start_nodes:
+        yield from _walk(root)
+    return roots
 
 
 # ------------------------------------------------------------
@@ -299,8 +392,8 @@ type SetValueFunc = Callable[[Any, Sequence, Any], Any]
 
 
 class _KwargsDfs3(TypedDict, total=False):
-    parents: WeakList[Self]
-    keypaths: KeyPaths
+    # parents: WeakList[Self] # TODO: be computed from graph. 当 del keypaths后，可以通过.parents来重新计算 keypaths
+    relation: RelationGraph
     pathCount: PathCount
 
 
@@ -322,7 +415,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     setValue: SetValueFunc = set_item_attr,
     *,
     parents: WeakList = WeakList(),
-    keypaths: KeyPaths = {},
+    keypaths: RelationGraph = {},
     pathCount: PathCount = (0,),
 ) -> Generator[CLS]:
     """
@@ -415,6 +508,11 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             # substitute python dict to sdict
             setValue(self, k, ret)  # self[k] = ret
     return self
+
+
+# ------------------------------------------------------------
+# dictDict
+# ------------------------------------------------------------
 
 
 @dataclass
@@ -602,7 +700,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         ref: R | None
         deep: bool
         parent: WeakList[Self]
-        keypaths: KeyPaths[Any]
+        keypaths: RelationGraph[Any]
         pathCount: PathCount
         getChild: GetChildFunc
 
@@ -613,7 +711,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         *,
         deep=True,
         parents: WeakList[Self] = WeakList(),
-        keypaths: KeyPaths[Any] = {},
+        keypaths: RelationGraph[Any] = {},
         pathCount: PathCount = (0,),
         getChild: GetChildFunc = get_children,
     ):
@@ -1160,7 +1258,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         return list(self.values()).count(value)
 
     @cached_property
-    def keypaths(self) -> KeyPaths[K]:
+    def keypaths(self) -> RelationGraph[K]:
         """from root. Use this when "object shared(same `id()`) in python" happens, otherwise I recommend you use `keypath` without 's'."""
         # TODO: "图"结构 ... } .. } .
         return {}
