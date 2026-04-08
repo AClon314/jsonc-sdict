@@ -137,6 +137,33 @@ def test_all_path_marks_cycle_start_without_appending_none_leaf():
     assert second.cycleStartKey == "ba"
 
 
+def test_all_path_with_target_returns_root_to_target_prefixes():
+    class Node:
+        def __init__(self, name):
+            self.name = name
+
+        def __repr__(self):
+            return self.name
+
+    root1 = Node("root1")
+    root2 = Node("root2")
+    shared = Node("shared")
+    leaf = Node("leaf")
+    graph = WeakKeyDictionary(
+        {
+            root1: WeakValueDictionary({"a": shared, "b": leaf}),
+            root2: WeakValueDictionary({"c": shared}),
+        }
+    )
+
+    paths = list(all_path(graph, target=shared))
+
+    assert [list(path.items()) for path in paths] == [
+        [(root1, "a"), (shared, NONE)],
+        [(root2, "c"), (shared, NONE)],
+    ]
+
+
 def test_nested_helper_mutators_work_in_place():
     class Box:
         pass
@@ -503,6 +530,24 @@ def test_sdict_keypath_reports_node_path():
     data = sdict({"a": {"b": 1}})
 
     assert data["a"].keypath == ("a",)
+
+
+def test_sdict_keypaths_are_derived_from_fork_graph():
+    data = sdict({"a": {"b": 1}})
+
+    assert list(data["a"].keypaths) == [("a",)]
+    assert isinstance(data.forkGraph, WeakKeyDictionary)
+
+
+def test_sdict_in_edges_and_parents_are_derived_from_fork_graph():
+    shared = sdict({"b": 1}, deep=False)
+    data = sdict({"a": shared, "x": shared}, deep=False)
+    data.rebuild()
+
+    edges = list(data["a"].parent_and_key())
+
+    assert edges == [(data, "a"), (data, "x")]
+    assert tuple(data["a"].parents) == (data,)
 
 
 def test_sdict_parent_reports_parent_node():

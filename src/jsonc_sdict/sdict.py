@@ -3,7 +3,6 @@ super dict, signal dict...
 """
 
 import re
-import itertools
 from weakref import WeakKeyDictionary, ref, WeakValueDictionary
 from dataclasses import dataclass
 from collections import OrderedDict
@@ -55,7 +54,7 @@ if TYPE_CHECKING:
 
 type Key[K = Any] = K | int
 """dict:Key | list:int-index"""
-type RelationGraph[K = Any, V = "sdict"] = WeakKeyDictionary[
+type ForkGraph[K = Any, V = "sdict"] = WeakKeyDictionary[
     V, WeakValueDictionary[Key[K], V]
 ]
 """{parent_1: {parentKeys_2: self_3}}, eg: {root1: {key2: son3, key22: son3}, son3: {key4: grandson5}}}, strictly require root -> parent -> children order."""
@@ -283,37 +282,47 @@ class NodeKeyDict[K, N = "sdict"](WeakKeyDictionary[N, K]):
         return self.keys()
 
     @property
-    def keypath(self) -> list[K]:
-        return list(self.values())[:-1]
+    def keypath(self) -> tuple[K, ...]:
+        return tuple(self.values())[:-1]
 
 
 def all_path[K, V = "sdict"](
-    graph: RelationGraph[K, V],
-) -> Generator[NodeKeyDict[K, V], Never, list[NodeKeyDict[K, V]]]:
+    forkGraph: ForkGraph[K, V],
+    target: V | None = None,
+) -> Generator[NodeKeyDict[K, V], Never, None]:
     """
     Enumerate all root-to-leaf paths in `graph`. Similar to `networkx.DiGraph.all_simple_path()`.
+
+    When `target` is provided, stop traversal once a path reaches that node and yield
+    root-to-target prefixes instead. If `target` is not found in `forkGraph`, yield the
+    isolated `{target: NONE}` path.
 
     Each yielded path is an ordered weak mapping of `{node: key_in_node}`:
     - `{leaf_node: NONE}` for a normal leaf
     - `cycleStartNode = ref(node)` when the path ends by closing a cycle
 
-    The persistent relation cache stays weakly referenced in `graph`, while DFS state
+    The persistent forkGraph cache stays weakly referenced in `graph`, while DFS state
     here uses a plain stack and an active-node index so push/pop order and cycle
     detection remain explicit.
     """
-    if not graph:
-        return []
-    roots: list[NodeKeyDict[K | int | NONE, V]] = []
-    graph_node_ids = {id(node) for node in graph.keys()}
+    if not forkGraph:
+        if target is not None:
+            result = NodeKeyDict()
+            result[target] = NONE
+            yield result
+        return
+    graph_node_ids = {id(node) for node in forkGraph.keys()}
     child_node_ids = {
-        id(child) for children in graph.values() for child in children.values()
+        id(child) for children in forkGraph.values() for child in children.values()
     }
-    start_nodes = [node for node in graph.keys() if id(node) not in child_node_ids]
+    start_nodes = [node for node in forkGraph.keys() if id(node) not in child_node_ids]
     if not start_nodes:
-        start_nodes = list(graph.keys())
+        start_nodes = list(forkGraph.keys())
 
     path: list[tuple[V, K | int | NONE]] = []
     active_index: dict[int, int] = {}
+    seen_target_paths: set[tuple[int, ...]] = set()
+    yielded_target = False
 
     def _emit(end: V | None = None, cycle_start: V | None = None):
         result = NodeKeyDict(path)
@@ -321,31 +330,59 @@ def all_path[K, V = "sdict"](
             result[end] = NONE
         if cycle_start is not None:
             result.cycleStartNode = ref(cycle_start)
-        roots.append(result)
+        # roots.append(result)
         return result
 
     def _walk(node: V):
+        nonlocal yielded_target
+        if node is target:
+            result = _emit(end=node)
+            signature = tuple(id(n) for n in result.nodePath)
+            if signature not in seen_target_paths:
+                seen_target_paths.add(signature)
+                yielded_target = True
+                yield result
+            return
+
         node_id = id(node)
         active_index[node_id] = len(path)
-        children = graph.get(node)
+        children = forkGraph.get(node)
         if not children:
-            yield _emit(end=node)
+            if target is None:
+                yield _emit(end=node)
         else:
             for edge_key, child in children.items():
                 path.append((node, edge_key))
                 child_id = id(child)
-                if child_id in active_index:
+                if child is target:
+                    result = _emit(end=child)
+                    signature = tuple(id(n) for n in result.nodePath)
+                    if signature not in seen_target_paths:
+                        seen_target_paths.add(signature)
+                        yielded_target = True
+                        yield result
+                elif child_id in active_index:
                     yield _emit(cycle_start=child)
                 elif child_id in graph_node_ids:
                     yield from _walk(child)
-                else:
+                elif target is None:
                     yield _emit(end=child)
                 path.pop()
         del active_index[node_id]
 
     for root in start_nodes:
         yield from _walk(root)
-    return roots
+    if target is not None and not yielded_target:
+        result = NodeKeyDict()
+        result[target] = NONE
+        yield result
+
+
+# def traceGraph[K, V = "sdict"](
+#     forkGraph: ForkGraph[K, V],
+# ):
+#     # TODO: 将forkGraph的 {parent: {keyInParent: child1, keyInParent2: child2}} 倒置为 {child1: {keyInParent: parent}, child2: {keyInParnet: parent}}
+#     pass
 
 
 # ------------------------------------------------------------
@@ -392,8 +429,8 @@ type SetValueFunc = Callable[[Any, Sequence, Any], Any]
 
 
 class _KwargsDfs3(TypedDict, total=False):
-    # parents: WeakList[Self] # TODO: be computed from graph. 当 del keypaths后，可以通过.parents来重新计算 keypaths
-    relation: RelationGraph
+    # `parents` traversal state should stay transient; post-build parent info is derived from `forkGraph`.
+    forkGraph: ForkGraph
     pathCount: PathCount
 
 
@@ -414,8 +451,8 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     readonly=False,
     setValue: SetValueFunc = set_item_attr,
     *,
-    parents: WeakList = WeakList(),
-    keypaths: RelationGraph = {},
+    parents: WeakList | None = None,
+    forkGraph: ForkGraph | None = None,
     pathCount: PathCount = (0,),
 ) -> Generator[CLS]:
     """
@@ -442,7 +479,11 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     ```
     """
     # print(f"{type(obj)=}")
-    if not iterable(obj) or len(keypaths) > maxDepth:
+    if parents is None:
+        parents = WeakList()
+    if forkGraph is None:
+        forkGraph = WeakKeyDictionary()
+    if not iterable(obj) or len(pathCount) - 1 > maxDepth:
         return obj
     if cls is None:
         cls = sdict  # type: ignore
@@ -450,8 +491,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     pathCount = (*pathCount[:-1], pathCount[-1] + 1)
     if isinstance(obj, sdict) and not readonly:
         # update
-        obj.parents = parents
-        obj.keypaths = keypaths
+        obj.forkGraph = forkGraph
         obj.pathCount = pathCount
         self = obj
     else:
@@ -470,7 +510,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
                 # deep==True等价于执行dfs()，所以False即可
                 deep=False,
                 parents=parents,
-                keypaths=keypaths,
+                forkGraph=forkGraph,
                 pathCount=pathCount,
             )
         except Exception as e:
@@ -485,13 +525,6 @@ def dfs[K = int, V = Any, CLS = "sdict"](
         if not iterable(v):
             continue
         _parent = WeakList((self,))
-        # _keypaths = (*keypaths, [k])  # TODO
-        if keypaths:
-            last_key = next(reversed(keypaths))
-            last_value = keypaths[last_key]
-            assert isinstance(last_value, list)
-
-        keypaths[k] = []
         _pathCount = (*pathCount, i)
         ret = yield from dfs(
             v,
@@ -501,9 +534,14 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             readonly=readonly,
             setValue=setValue,
             parents=_parent,
-            keypaths=keypaths,
+            forkGraph=forkGraph,
             pathCount=_pathCount,
         )
+        p2c_children = forkGraph.get(self)
+        if p2c_children is None:
+            p2c_children = WeakValueDictionary()
+            forkGraph[self] = p2c_children
+        p2c_children[k] = ret
         if not readonly:
             # substitute python dict to sdict
             setValue(self, k, ret)  # self[k] = ret
@@ -700,7 +738,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         ref: R | None
         deep: bool
         parent: WeakList[Self]
-        keypaths: RelationGraph[Any]
+        forkGraph: ForkGraph[Any]
         pathCount: PathCount
         getChild: GetChildFunc
 
@@ -710,8 +748,8 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         ref: R | None = None,
         *,
         deep=True,
-        parents: WeakList[Self] = WeakList(),
-        keypaths: RelationGraph[Any] = {},
+        parents: WeakList[Self] | None = None,
+        forkGraph: ForkGraph[Any] | None = None,
         pathCount: PathCount = (0,),
         getChild: GetChildFunc = get_children,
     ):
@@ -740,8 +778,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         super().__init__(data or ())
         self.ref = ref
         """can storage pydantic_model_data, list_data..."""
-        self.parents = parents
-        self.keypaths = keypaths
+        self.forkGraph = forkGraph if forkGraph is not None else WeakKeyDictionary()
         self.pathCount = pathCount
         if deep:
             self.rebuild()
@@ -750,18 +787,18 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """build index/cache entirely.\n
         currently I recommand re-init a sdict instance if you want to **treat a child as new root node**, by `sdict(myChild_as_NewRoot_oldSdict)`
         """
+        self.forkGraph = WeakKeyDictionary()
         for _ in dfs(
             self,
-            parents=self.parents,
-            keypaths=self.keypaths,
+            forkGraph=self.forkGraph,
             pathCount=self.pathCount,
         ):
             pass
         self.del_cache()
 
-    _Type_Cached = Literal["unref", "keypaths", "keypath", "height", "childkeys"]
+    _Type_Cached = Literal["unref", "height", "childkeys"]
     _cached = args_of_type(_Type_Cached)
-    _cached_parent = ("keypaths", "keypath")
+    _cached_parent = ()
     _cached_child = ("unref", "childkeys")
 
     def del_cache(
@@ -873,6 +910,10 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     def __del__(self):
         [c.del_cache() for c in self.childkeys]  # TODO self.childkeys
         # TODO
+
+    def __call__(self, *args) -> Self:
+        # TODO
+        return self
 
     def __hash__(self):
         return id(self)
@@ -988,10 +1029,10 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
         changed = False
         if old is UNSET:
-            if not self.parents or not self.keypaths:
+            edge = next(self.parent_and_key(), None)
+            if edge is None:
                 raise KeyError(new, "not found")
-            parent = self.parents[-1]
-            old = self.keypaths[-1][-1]
+            parent, old = edge
             if not isinstance(parent, MutableMapping):
                 raise TypeError(f"parent must be MutableMapping, got {type(parent)!r}")
             if old not in parent:
@@ -1154,9 +1195,9 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """
         if digList is False:
             getChild = get_children_noList
-        for v in self.dfs(maxDepth=maxDepth, getChild=getChild, **kwargs):
+        for v in tuple(self.dfs(maxDepth=maxDepth, getChild=getChild, **kwargs)):
             if isinstance(v, self.__class__) and in_range(v.depth, slice):
-                for kp in itertools.product(*v.keypaths):
+                for kp in v.keypaths:
                     yield kp, v  # TODO: need test
 
     def dfs(
@@ -1257,19 +1298,41 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     def count(self, value: V) -> int:
         return list(self.values()).count(value)
 
-    @cached_property
-    def keypaths(self) -> RelationGraph[K]:
-        """from root. Use this when "object shared(same `id()`) in python" happens, otherwise I recommend you use `keypath` without 's'."""
-        # TODO: "图"结构 ... } .. } .
-        return {}
+    def upstreamPaths(self) -> Generator[NodeKeyDict[Any, Self], Never, None]:
+        """Enumerate all root-to-self paths derived from `self.forkGraph`."""
+        yield from all_path(self.forkGraph, target=self)
 
-    @cached_property
+    @property
+    def keypaths(self):
+        """upstream from root. Use this when shared objects create multiple paths to the same node."""
+        return (nk.keypath for nk in self.upstreamPaths())
+
+    @property
     def keypath(self) -> tuple:
-        return list(itertools.product(*self.keypaths))[-1]
+        """This is unstable for shared nodes; use `.keypaths` in that case."""
+        return next(self.keypaths)
+
+    def parent_and_key(self) -> Generator[tuple[Self, Any], Never, None]:
+        """Yield direct incoming edges as `(parent, key_in_parent)`."""
+        for parent, children in self.forkGraph.items():
+            for key, child in children.items():
+                if child is self:
+                    yield parent, key
+
+    @property
+    def parents(self):
+        seen: set[Self] = set()
+        for parent, _ in self.parent_and_key():
+            # parent_id = id(parent)
+            if parent in seen:
+                continue
+            seen.add(parent)
+            yield parent
 
     @property
     def parent(self) -> Any | None:
-        return self.parents[-1] if self.parents else None
+        """This is unstable for shared nodes; use `.parents` in that case."""
+        return next(self.parents, None)
 
     @property
     def depth(self):
