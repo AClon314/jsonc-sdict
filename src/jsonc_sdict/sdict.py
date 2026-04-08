@@ -537,11 +537,12 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             forkGraph=forkGraph,
             pathCount=_pathCount,
         )
-        p2c_children = forkGraph.get(self)
-        if p2c_children is None:
-            p2c_children = WeakValueDictionary()
-            forkGraph[self] = p2c_children
-        p2c_children[k] = ret
+        if isinstance(ret, sdict):
+            p2c_children = forkGraph.get(self)
+            if p2c_children is None:
+                p2c_children = WeakValueDictionary()
+                forkGraph[self] = p2c_children
+            p2c_children[k] = ret
         if not readonly:
             # substitute python dict to sdict
             setValue(self, k, ret)  # self[k] = ret
@@ -908,8 +909,14 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         self.del_cache(only=self._cached_child)
 
     def __del__(self):
-        [c.del_cache() for c in self.childkeys]  # TODO self.childkeys
-        # TODO
+        childkeys = self.__dict__.get("childkeys")
+        if childkeys is None:
+            return
+        for child in childkeys:
+            try:
+                child.del_cache()
+            except Exception:
+                pass
 
     def __call__(self, *args) -> Self:
         # TODO
@@ -1345,7 +1352,8 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         from leaves
         currently not implement signal dict like angular, so you need manually del cache
         """
-        return max((node.depth for node in self.dfs(readonly=True)), default=0)
+        nodes = tuple(self.dfs(readonly=True))
+        return max((node.depth for node in nodes), default=0)
 
     @cached_property
     def childkeys(self):

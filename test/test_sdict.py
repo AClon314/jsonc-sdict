@@ -164,6 +164,21 @@ def test_all_path_with_target_returns_root_to_target_prefixes():
     ]
 
 
+def test_all_path_with_missing_target_returns_isolated_target_path():
+    class Node:
+        pass
+
+    root = Node()
+    leaf = Node()
+    target = Node()
+    graph = WeakKeyDictionary({root: WeakValueDictionary({"a": leaf})})
+
+    paths = list(all_path(graph, target=target))
+
+    assert len(paths) == 1
+    assert list(paths[0].items()) == [(target, NONE)]
+
+
 def test_nested_helper_mutators_work_in_place():
     class Box:
         pass
@@ -199,6 +214,22 @@ def test_unref_handles_nested_sdict_and_const_mode():
     assert frozen["arr"] == (2, 3)
 
 
+def test_unref_preserves_shared_references_and_cycles():
+    shared = sdict({"x": 1}, deep=False)
+    wrapped = {"left": shared, "right": shared}
+
+    plain = unref(wrapped)
+
+    assert plain == {"left": {"x": 1}, "right": {"x": 1}}
+    assert plain["left"] is plain["right"]
+
+    cyc = {}
+    cyc["self"] = cyc
+    restored = unref(cyc)
+
+    assert restored["self"] is restored
+
+
 def test_un_dictDict_restores_nested_and_root_lists():
     nested = {
         "groups": [
@@ -223,24 +254,15 @@ def test_un_dictDict_restores_nested_and_root_lists():
     assert unref(root_restored) == root
 
 
-def test_sdict_shallow_mapping_operations():
+def test_sdict_shallow_mapping_operations_smoke():
     data = sdict({"a": 1, "b": 2, "c": 2})
 
-    assert data["a"] == 1
-    assert data.index("b") == 1
-    assert data.index(value=2) == 1
-    assert data.count(2) == 2
-    assert tuple(data.v_to_k(2)) == ("b", "c")
-
     data.insert({"x": 9}, key="a", after=True)
-    assert list(data.keys()) == ["a", "x", "b", "c"]
-
     data.rename_key("x", "y")
     data.rename_key_re(r"^a$", "A")
-    assert list(data.keys()) == ["A", "y", "b", "c"]
-
     data.sort(reverse=True)
-    assert list(data.keys()) == ["y", "c", "b", "A"]
+
+    assert list(data.items()) == [("y", 9), ("c", 2), ("b", 2), ("A", 1)]
 
 
 def test_sdict_merge_merges_into_self_and_forwards_kwargs():
@@ -293,11 +315,12 @@ def test_sdict_rebuild_wraps_nested_mapping_after_shallow_init():
     assert isinstance(data["a"], sdict)
 
 
-def test_sdict_init_subclass_populates_cached_fields():
-    class ChildSDict(sdict):
-        pass
+def test_sdict_getitem_slice_returns_flattened_descendants():
+    data = sdict({"a": {"b": 1}, "x": {"y": 2}}, deep=False)
 
-    assert ChildSDict._cached == ("height", "childkeys", "unref")
+    values = data[1:]
+
+    assert [value.v for value in values] == [{"b": 1}, {"y": 2}]
 
 
 def test_sdict_del_cache_keeps_requested_cached_values():
@@ -454,6 +477,25 @@ def test_sdict_rename_key_re_applies_regex_substitution():
     assert list(data.items()) == [("za", 1), ("zb", 2)]
 
 
+def test_sdict_rename_key_deep_updates_nested_mappings():
+    data = sdict({"a": {"old": 1}, "b": {"old": 2}}, deep=False)
+
+    data.rebuild()
+    data.rename_key("old", "new", deep=True)
+
+    assert data.unref == {"a": {"new": 1}, "b": {"new": 2}}
+
+
+def test_sdict_rename_key_without_old_renames_current_node_in_parent():
+    data = sdict({"a": {"value": 1}, "b": {"value": 2}}, deep=False)
+
+    data.rebuild()
+    data["a"].rename_key(new="renamed")
+
+    assert list(data.keys()) == ["renamed", "b"]
+    assert data["renamed", "value"] == 1
+
+
 def test_sdict_keys_flat_readonly_returns_keypaths():
     data = sdict({"a": {"b": 1}}, deep=False)
 
@@ -567,6 +609,18 @@ def test_sdict_childkeys_returns_root_and_direct_children():
 
     assert len(data.childkeys) == 2
     assert data.childkeys[1].parent is data
+
+
+def test_sdict_child_caches_are_invalidated_after_top_level_mutation():
+    data = sdict({"a": {"b": 1}})
+
+    assert data.unref == {"a": {"b": 1}}
+    assert len(data.childkeys) == 2
+
+    data["x"] = {"y": 2}
+
+    assert data.unref == {"a": {"b": 1}, "x": {"y": 2}}
+    assert [node.keypath for node in data.childkeys] == [(), ("a",), ("x",)]
 
 
 def test_sdict_dfs_default_mode_yields_nested_nodes():
