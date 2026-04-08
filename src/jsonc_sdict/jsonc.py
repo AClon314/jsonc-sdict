@@ -19,7 +19,6 @@ comment-keyname rules:
 import json
 from dataclasses import dataclass
 from functools import cached_property
-from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence, Iterable, MutableSequence
 from typing import Any, Unpack, Literal, cast, overload, Self
 from warnings import deprecated

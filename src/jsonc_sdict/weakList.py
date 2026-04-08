@@ -469,3 +469,6 @@ class Ref[V]:
         if isinstance(other, Ref):
             return self.v >= other.v
         return self.v >= other
+
+    def __call__(self) -> V:
+        return self.v

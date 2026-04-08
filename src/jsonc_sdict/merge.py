@@ -523,6 +523,16 @@ for gen in merge(...):
                 break
         return self
 
+    # NOTE: __call__ should be designed the main action of this class. eg: merge, so get result directly.
+    def __call__(self, *args, **kw) -> T1:
+        """
+        `__call__` may undergo **breaking changes** in the future, based on its most common calling patterns and usage scenarios.
+        ```python
+        final_merged_result = merge((old,new))()
+        ```
+        """
+        return self.solve_all().merged
+
     class MergeFlatIterableOperator(BaseOperator):
         """do NOT dig down when the iterable(or list/dict) is ALL consist of scalar values(bool|int|str|...). eg: [0,1,"s"], {"num": 0, "key": "s"}"""
 
@@ -574,6 +584,7 @@ for gen in merge(...):
 
     class Kwargs(TypedDict, total=False):
         """merge(**kwargs) default export"""
+
         old_new: tuple[T1, T2] | DeepDiff[T1, T2]
         dictDict: "merge._KwargsDictDict | None"
         deepdiff_args: Mapping[str, Any]
@@ -597,12 +608,15 @@ for gen in merge(...):
         Usage:
         ```python
         for _ in (self := merge((old, new))):
-            NEW = self.new + "you can manually solve each conflict"
-            self.set_item(value=NEW)
+            if ...:
+                NEW = self.new + "you can manually solve each conflict"
+                self.set_item(value=NEW)
+            else:
+                self.solve_each()
         result = self.merged
 
         # or just use default solver to get merged result
-        result = merge((old,new)).solve().merged
+        result = merge((old,new)).solve_all().merged
         ```
 
         Args:

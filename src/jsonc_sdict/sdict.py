@@ -429,8 +429,8 @@ type SetValueFunc = Callable[[Any, Sequence, Any], Any]
 
 
 class _KwargsDfs3(TypedDict, total=False):
-    # `parents` traversal state should stay transient; post-build parent info is derived from `forkGraph`.
     forkGraph: ForkGraph
+    keypath: tuple
     pathCount: PathCount
 
 
@@ -451,8 +451,8 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     readonly=False,
     setValue: SetValueFunc = set_item_attr,
     *,
-    parents: WeakList | None = None,
     forkGraph: ForkGraph | None = None,
+    keypath: tuple = (),
     pathCount: PathCount = (0,),
 ) -> Generator[CLS]:
     """
@@ -479,8 +479,6 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     ```
     """
     # print(f"{type(obj)=}")
-    if parents is None:
-        parents = WeakList()
     if forkGraph is None:
         forkGraph = WeakKeyDictionary()
     if not iterable(obj) or len(pathCount) - 1 > maxDepth:
@@ -492,6 +490,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     if isinstance(obj, sdict) and not readonly:
         # update
         obj.forkGraph = forkGraph
+        obj.keypath = keypath  # NOTE: overwrite cache
         obj.pathCount = pathCount
         self = obj
     else:
@@ -509,7 +508,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
                 ref=ref,
                 # deep==True等价于执行dfs()，所以False即可
                 deep=False,
-                parents=parents,
+                keypath=keypath,
                 forkGraph=forkGraph,
                 pathCount=pathCount,
             )
@@ -524,7 +523,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     for i, (k, v) in enumerate(children):
         if not iterable(v):
             continue
-        _parent = WeakList((self,))
+        _keypath = (*keypath, k)
         _pathCount = (*pathCount, i)
         ret = yield from dfs(
             v,
@@ -533,8 +532,8 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             getChild=getChild,
             readonly=readonly,
             setValue=setValue,
-            parents=_parent,
             forkGraph=forkGraph,
+            keypath=_keypath,
             pathCount=_pathCount,
         )
         if isinstance(ret, sdict):
@@ -621,8 +620,8 @@ def dictDict[CLS = "sdict"](
             if idKey is UNSET:
                 key = id(v)
                 if key in self:
-                    raise _TODO
-            elif getValue:  # TODO
+                    raise _TODO  # TODO: {123:"data", sdict(): ...} -> {123:"data", 123: ...} id(sdict()) == id(123) == 123
+            elif getValue:
                 key = getValue(v, idKey)
         self.update({key: v})
         # gen.send(self) # TODO: 似乎执不执行，结果都一样？
@@ -685,6 +684,18 @@ def un_dictDict[CLS = "sdict"](context: ddReturn[CLS]) -> CLS:
 # ------------------------------------------------------------
 
 
+@overload
+def unref[K, V](
+    obj: Mapping[K, V], const=False, _memo: dict[int, Any] | None = None
+) -> dict[K, V]: ...
+
+
+@overload
+def unref[V](
+    obj: Iterable[V], const=False, _memo: dict[int, Any] | None = None
+) -> list[V]: ...
+
+
 def unref(obj, const=False, _memo: dict[int, Any] | None = None):
     """
     Args:
@@ -732,7 +743,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         R: type of self.ref
     """
 
-    type IterAsMap = Iterable[tuple[K, V]]
+    _Type_IterAsMap = Iterable[tuple[K, V]]
 
     class Kwargs(TypedDict, total=False):
         # data: Mapping[K, V] | None
@@ -745,11 +756,10 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
     def __init__(
         self,
-        data: Mapping[K, V] | IterAsMap | Any | None = None,
+        data: Mapping[K, V] | _Type_IterAsMap | Any | None = None,
         ref: R | None = None,
         *,
         deep=True,
-        parents: WeakList[Self] | None = None,
         forkGraph: ForkGraph[Any] | None = None,
         pathCount: PathCount = (0,),
         getChild: GetChildFunc = get_children,
@@ -863,7 +873,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     @overload
     def __getitem__(self, key: Any) -> Any: ...
 
-    def __getitem__(self, key: K | Iterable[K] | slice | Any):
+    def __getitem__(self, key: K | Iterable[K] | slice):
         """
         - before rebuild(), return actual value
         - after rebuild(), return `sdict` that wraps actual value
@@ -882,7 +892,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """see `set_item_attr()`"""
         return set_item_attr(self.v if at is UNSET else at, key, value)
 
-    def __setitem__(self, key: K | Sequence[K] | slice | Any, value):
+    def __setitem__(self, key: K | Sequence[K] | slice, value):
         if isinstance(key, slice):
             raise _TODO  # TODO: batch
             for i in self.keys_flat(slice=key):
@@ -897,7 +907,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """see `del_item_attr()`"""
         return del_item_attr(self.v if at is UNSET else at, key)
 
-    def __delitem__(self, key: K | Sequence[K] | slice | Any):
+    def __delitem__(self, key: K | Sequence[K] | slice):
         if isinstance(key, slice):
             raise _TODO  # TODO: batch
             for i in self.keys_flat(slice=key):
@@ -918,9 +928,31 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             except Exception:
                 pass
 
-    def __call__(self, *args) -> Self:
-        # TODO
-        return self
+    def __call__(self, *args, up: int = 0, path: Iterable = (), **kw) -> Self:
+        """
+        `__call__` may undergo **breaking changes** in the future, based on its most common calling patterns and usage scenarios.
+        ```python
+        # equal
+        childDict = sdict(...)('rootKey', 'parentKey', 'ChildKey')
+        childDict = sdict(...)['rootKey', 'parentKey', 'ChildKey']
+
+        # go up
+        sdict(...)(up=2, path=('rootKey', 'parentKey', 'ChildKey'))
+        sdict(...).parent.parent['rootKey', 'parentKey', 'ChildKey']
+        ```
+        """
+        v = self.__getitem__(args)
+        try:
+            if up >= 0:
+                for _ in range(up):
+                    v = v.parent
+            else:
+                # TODO: goto deepest leaf or just childKey[0].childKey[0]...?
+                raise _TODO
+            v = v[path]
+            return v
+        except Exception as e:
+            raise TypeError(f"Expected {self.__class__}, got {type(v)}") from e
 
     def __hash__(self):
         return id(self)
@@ -1036,7 +1068,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
         changed = False
         if old is UNSET:
-            edge = next(self.parent_and_key(), None)
+            edge = next(self._parentWithKey, None)
             if edge is None:
                 raise KeyError(new, "not found")
             parent, old = edge
@@ -1144,7 +1176,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             **kwargs: forwarded to `jsonc_sdict.merge.merge`, except `old_new`
         """
         if "old_new" in kwargs:
-            raise TypeError("sdict.merge() got unexpected keyword argument 'old_new'")
+            raise ValueError("sdict.merge() got unexpected keyword argument 'old_new'")
         from jsonc_sdict.merge import merge
 
         merge((self, obj), **kwargs).solve_all()
@@ -1157,7 +1189,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         slice: slice = slice(None),
         getChild: GetChildFunc = get_children,
         **kwargs: Unpack[_KwargsDfs3],
-    ):
+    ) -> Generator[tuple, Never, None]:
         """
         like benedict.keypaths()
         Args:
@@ -1176,7 +1208,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         slice: slice = slice(None),
         getChild: GetChildFunc = get_children,
         **kwargs: Unpack[_KwargsDfs3],
-    ):
+    ) -> Generator[Self, Never, None]:
         """
         Args:
             digList: set False if you only want dict-dict-dict, instead of dict-list-dict...
@@ -1194,7 +1226,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         slice: slice = slice(None),
         getChild: GetChildFunc = get_children,
         **kwargs: Unpack[_KwargsDfs3],
-    ):
+    ) -> Generator[tuple[tuple, Self], Any, None]:
         """
         Args:
             digList: set False if you only want dict-dict-dict, instead of dict-list-dict...
@@ -1204,8 +1236,11 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             getChild = get_children_noList
         for v in tuple(self.dfs(maxDepth=maxDepth, getChild=getChild, **kwargs)):
             if isinstance(v, self.__class__) and in_range(v.depth, slice):
-                for kp in v.keypaths:
-                    yield kp, v  # TODO: need test
+                NEW = yield v.keypath, v  # TODO: 移动key？太蠢了
+                if NEW is not None:
+                    if NEW is NONE:
+                        NEW = None
+                    self[v.keypath] = NEW
 
     def dfs(
         self,
@@ -1214,7 +1249,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         readonly=False,
         setValue=set_item_attr,
         **kwargs: Unpack[_KwargsDfs3],
-    ) -> Generator[Self, Any, Self | Any]:
+    ) -> Generator[Self, Any, Self]:
         """
         see `dfs(**kwargs)`
         """
@@ -1305,31 +1340,43 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     def count(self, value: V) -> int:
         return list(self.values()).count(value)
 
-    def upstreamPaths(self) -> Generator[NodeKeyDict[Any, Self], Never, None]:
+    @property
+    def _upstreamPaths(self) -> Generator[NodeKeyDict[Any, Self], Never, None]:
         """Enumerate all root-to-self paths derived from `self.forkGraph`."""
         yield from all_path(self.forkGraph, target=self)
 
     @property
-    def keypaths(self):
+    def keypaths(self) -> Generator[tuple, Never, None]:
         """upstream from root. Use this when shared objects create multiple paths to the same node."""
-        return (nk.keypath for nk in self.upstreamPaths())
+        return (nk.keypath for nk in self._upstreamPaths)
 
-    @property
+    @cached_property
     def keypath(self) -> tuple:
-        """This is unstable for shared nodes; use `.keypaths` in that case."""
+        """of the current iteration. This is unstable for shared nodes; use `.keypaths` in that case."""
         return next(self.keypaths)
 
-    def parent_and_key(self) -> Generator[tuple[Self, Any], Never, None]:
-        """Yield direct incoming edges as `(parent, key_in_parent)`."""
+    @property
+    def nodePaths(self) -> Generator[Iterator[Self], Never, None]:
+        """upstream from root. Use this when shared objects create multiple paths to the same node."""
+        return (nk.nodePath for nk in self._upstreamPaths)
+
+    @property
+    def nodePath(self) -> Iterator[Self]:
+        """This is unstable for shared nodes; use `.keypaths` in that case."""
+        return next(self.nodePaths)
+
+    @property
+    def _parentWithKey(self) -> Generator[tuple[Self, Any], Never, None]:
+        """yield `(parent, key_in_parent)` from parent level."""
         for parent, children in self.forkGraph.items():
             for key, child in children.items():
                 if child is self:
                     yield parent, key
 
     @property
-    def parents(self):
+    def parents(self) -> Generator[Self, Never, None]:
         seen: set[Self] = set()
-        for parent, _ in self.parent_and_key():
+        for parent, _ in self._parentWithKey:
             # parent_id = id(parent)
             if parent in seen:
                 continue
@@ -1337,14 +1384,31 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             yield parent
 
     @property
-    def parent(self) -> Any | None:
+    def parent(self) -> Self | None:
         """This is unstable for shared nodes; use `.parents` in that case."""
         return next(self.parents, None)
+
+    @property
+    def roots(self) -> Generator[Self, Never, None]:
+        pass  # TODO
+
+    @property
+    def root(self) -> Self:
+        return next(self.roots)
 
     @property
     def depth(self):
         """from root"""
         return len(self.keypath)  # len(self.pathCount)
+
+    @property
+    def deepests(self) -> Generator[Self, Never, None]:
+        pass  # TODO
+
+    @property
+    def deepest(self) -> Self:
+        """deepest leaf node"""
+        return next(self.deepests)
 
     @cached_property
     def height(self):
@@ -1352,8 +1416,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         from leaves
         currently not implement signal dict like angular, so you need manually del cache
         """
-        nodes = tuple(self.dfs(readonly=True))
-        return max((node.depth for node in nodes), default=0)
+        return max((node.depth for node in tuple(self.keys_flat())), default=0)
 
     @cached_property
     def childkeys(self):

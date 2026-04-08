@@ -586,7 +586,7 @@ def test_sdict_in_edges_and_parents_are_derived_from_fork_graph():
     data = sdict({"a": shared, "x": shared}, deep=False)
     data.rebuild()
 
-    edges = list(data["a"].parent_and_key())
+    edges = list(data["a"]._parentWithKey)
 
     assert edges == [(data, "a"), (data, "x")]
     assert tuple(data["a"].parents) == (data,)
