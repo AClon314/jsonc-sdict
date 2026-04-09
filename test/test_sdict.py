@@ -592,10 +592,29 @@ def test_sdict_in_edges_and_parents_are_derived_from_fork_graph():
     assert tuple(data["a"].parents) == (data,)
 
 
+def test_sdict_dfs_stops_on_cycle_without_losing_direct_child():
+    left = sdict({}, deep=False)
+    right = sdict({}, deep=False)
+    left["b"] = right
+    right["a"] = left
+
+    nodes = list(left.dfs())
+
+    assert nodes == [left, right]
+
+
 def test_sdict_parent_reports_parent_node():
     data = sdict({"a": {"b": 1}})
 
     assert data["a"].parent is data
+
+
+def test_sdict_roots_deduplicates_same_root_for_shared_node():
+    shared = sdict({"b": 1}, deep=False)
+    data = sdict({"a": shared, "x": shared}, deep=False)
+    data.rebuild()
+
+    assert tuple(data["a"].roots) == (data,)
 
 
 def test_sdict_depth_reports_node_depth():
@@ -631,5 +650,21 @@ def test_sdict_dfs_default_mode_yields_nested_nodes():
     assert nodes[1].keypath == ("a",)
 
 
+def test_sdict_dfs_on_child_keeps_absolute_keypath():
+    data = sdict({"a": {"b": {"c": 1}}})
+    nodes = list(data["a"].dfs())
+
+    assert nodes == [data["a"], data["a", "b"]]
+    assert [node.keypath for node in nodes] == [("a",), ("a", "b")]
+
+
 def test_sdict_height_reports_max_nested_depth():
     assert sdict({"a": {"b": 1}}, deep=False).height == 1
+
+
+def test_sdict_deepests_reports_deepest_descendants_from_current_node():
+    data = sdict({"a": {"b": 1}, "x": {"y": {"z": 2}}})
+
+    assert tuple(node.unref for node in data.deepests) == ({"z": 2},)
+    assert data["a"].deepest is data["a"]
+    assert data["x"].deepest is data["x", "y"]

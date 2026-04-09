@@ -385,7 +385,7 @@ class WeakList[H](Sequence[H]):
 class OrderedWeakSet[H](MutableSet[H]):
     """
     Ordered set that holds weak references (WeakOrderedSet).
-    Elements must be hashable and support weak references.
+    Elements must be **hashable and support weak references**, with __hash__() and __weakref__() implemented
     """
 
     @property
@@ -408,6 +408,9 @@ class OrderedWeakSet[H](MutableSet[H]):
 
     def add(self, value: H) -> None:
         self.dict[value] = None
+
+    def update(self, values: Iterable[H]) -> None:
+        self.dict.update({v: None for v in values})
 
     def discard(self, value: H) -> None:
         if value in self.dict:

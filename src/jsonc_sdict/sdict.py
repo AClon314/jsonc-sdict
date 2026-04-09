@@ -3,7 +3,7 @@ super dict, signal dict...
 """
 
 import re
-from weakref import WeakKeyDictionary, ref, WeakValueDictionary
+from weakref import ref, WeakKeyDictionary, WeakValueDictionary
 from dataclasses import dataclass
 from collections import OrderedDict
 from functools import cached_property, partial
@@ -41,11 +41,11 @@ from jsonc_sdict.share import (
     copy_args,
     args_of_type,
     iterable,
+    iSlice,
     in_range,
     are_equal,
     getLogger,
     _TODO,
-    iSlice,
 )
 from jsonc_sdict.weakList import WeakList
 
@@ -391,12 +391,12 @@ def all_path[K, V = "sdict"](
 
 
 def get_children[K, V](
-    self: "sdict[K, V] | Any", raw: Node[K, V] | Any, digList=True
-):  # -> Generator[Iterable[K,V], None, None] | Generator[Iterable[tuple[int, V]], None, None]:
+    self: Node[K, V], raw: Node[K, V] | Any, digList=True
+) -> Iterable[tuple[K | int, V]]:
     """
     default getChild func
     Args:
-        self: maybe sdict that holding raw in `dfs()`, or Any
+        self (sdict|Any): sdict(raw) by `dfs()`
         raw: original data
             - dict: {key: value}
             - list: {index: value}
@@ -451,6 +451,7 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     readonly=False,
     setValue: SetValueFunc = set_item_attr,
     *,
+    pathSeenIds: set[int] | None = None,
     forkGraph: ForkGraph | None = None,
     keypath: tuple = (),
     pathCount: PathCount = (0,),
@@ -479,9 +480,12 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     ```
     """
     # print(f"{type(obj)=}")
+    if pathSeenIds is None:
+        pathSeenIds = set()
     if forkGraph is None:
         forkGraph = WeakKeyDictionary()
-    if not iterable(obj) or len(pathCount) - 1 > maxDepth:
+    depth = len(pathCount) - 1
+    if not iterable(obj) or depth > maxDepth:
         return obj
     if cls is None:
         cls = sdict  # type: ignore
@@ -489,9 +493,6 @@ def dfs[K = int, V = Any, CLS = "sdict"](
     pathCount = (*pathCount[:-1], pathCount[-1] + 1)
     if isinstance(obj, sdict) and not readonly:
         # update
-        obj.forkGraph = forkGraph
-        obj.keypath = keypath  # NOTE: overwrite cache
-        obj.pathCount = pathCount
         self = obj
     else:
         data = None
@@ -508,7 +509,6 @@ def dfs[K = int, V = Any, CLS = "sdict"](
                 ref=ref,
                 # deep==True等价于执行dfs()，所以False即可
                 deep=False,
-                keypath=keypath,
                 forkGraph=forkGraph,
                 pathCount=pathCount,
             )
@@ -516,12 +516,20 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             Log.error(f"{cls=} is not sdict, fallback to positional init", exc_info=e)
             self = cls(data if data else ref)
     self = cast(sdict, self)
+    self.forkGraph = forkGraph
+    self.keypath = keypath  # NOTE: overwrite cache
+    self.pathCount = pathCount
+
     newSelf = yield self
     if newSelf is not None:
         self = None if newSelf is NONE else newSelf
+    if depth >= maxDepth:
+        return self
+
     children = getChild(self, obj)
+    pathSeenIds = pathSeenIds | {id(obj)}
     for i, (k, v) in enumerate(children):
-        if not iterable(v):
+        if not iterable(v) or id(v) in pathSeenIds:
             continue
         _keypath = (*keypath, k)
         _pathCount = (*pathCount, i)
@@ -532,16 +540,18 @@ def dfs[K = int, V = Any, CLS = "sdict"](
             getChild=getChild,
             readonly=readonly,
             setValue=setValue,
+            pathSeenIds=pathSeenIds,
             forkGraph=forkGraph,
             keypath=_keypath,
             pathCount=_pathCount,
         )
         if isinstance(ret, sdict):
-            p2c_children = forkGraph.get(self)
-            if p2c_children is None:
-                p2c_children = WeakValueDictionary()
-                forkGraph[self] = p2c_children
-            p2c_children[k] = ret
+            pk2cn: WeakValueDictionary[Any, CLS] = forkGraph.get(self)
+            """parent key to child nodes"""
+            if pk2cn is None:
+                pk2cn = WeakValueDictionary()
+                forkGraph[self] = pk2cn
+            pk2cn[k] = ret
         if not readonly:
             # substitute python dict to sdict
             setValue(self, k, ret)  # self[k] = ret
@@ -1236,11 +1246,19 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             getChild = get_children_noList
         for v in tuple(self.dfs(maxDepth=maxDepth, getChild=getChild, **kwargs)):
             if isinstance(v, self.__class__) and in_range(v.depth, slice):
-                NEW = yield v.keypath, v  # TODO: 移动key？太蠢了
+                NEW = yield v.keypath, v
                 if NEW is not None:
                     if NEW is NONE:
                         NEW = None
                     self[v.keypath] = NEW
+
+    def _dfs_kwargs(self) -> _KwargsDfs3:
+        seed = (*self.pathCount[:-1], max(self.pathCount[-1] - 1, 0))
+        return {
+            "forkGraph": self.forkGraph,
+            "keypath": self.keypath,
+            "pathCount": seed,
+        }
 
     def dfs(
         self,
@@ -1253,6 +1271,8 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """
         see `dfs(**kwargs)`
         """
+        for k, v in self._dfs_kwargs().items():
+            kwargs.setdefault(k, v)
         return dfs(  # type: ignore
             self.v,
             cls=self.__class__,  # type: ignore
@@ -1375,12 +1395,12 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
     @property
     def parents(self) -> Generator[Self, Never, None]:
-        seen: set[Self] = set()
+        seenIds: set[int] = set()
         for parent, _ in self._parentWithKey:
-            # parent_id = id(parent)
-            if parent in seen:
+            id_parent = id(parent)
+            if id_parent in seenIds:
                 continue
-            seen.add(parent)
+            seenIds.add(id_parent)
             yield parent
 
     @property
@@ -1390,7 +1410,14 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
     @property
     def roots(self) -> Generator[Self, Never, None]:
-        pass  # TODO
+        seenIds: set[int] = set()
+        for nodePath in self.nodePaths:
+            root = next(nodePath, self)
+            id_root = id(root)
+            if id_root in seenIds:
+                continue
+            seenIds.add(id_root)
+            yield root
 
     @property
     def root(self) -> Self:
@@ -1402,13 +1429,35 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         return len(self.keypath)  # len(self.pathCount)
 
     @property
-    def deepests(self) -> Generator[Self, Never, None]:
-        pass  # TODO
+    def deepests(self) -> list[Self]:
+        deepests: list[Self] = []
+        seenIds: set[int] = set()
+        max_depth = -1
+
+        def _has_descendable_child(node: Self) -> bool:
+            path_ids = {id(n) for n in node.nodePath}
+            for _, child in get_children(node, node.v):
+                if iterable(child) and id(child) not in path_ids:
+                    return True
+            return False
+
+        for node in self.dfs():
+            if _has_descendable_child(node):
+                continue
+            node_id = id(node)
+            if node.depth > max_depth:
+                max_depth = node.depth
+                deepests = [node]
+                seenIds = {node_id}
+            elif node.depth == max_depth and node_id not in seenIds:
+                deepests.append(node)
+                seenIds.add(node_id)
+        return deepests
 
     @property
     def deepest(self) -> Self:
         """deepest leaf node"""
-        return next(self.deepests)
+        return self.deepests[0]
 
     @cached_property
     def height(self):
@@ -1416,7 +1465,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         from leaves
         currently not implement signal dict like angular, so you need manually del cache
         """
-        return max((node.depth for node in tuple(self.keys_flat())), default=0)
+        return max((node.depth for node in self.values_flat()), default=0)
 
     @cached_property
     def childkeys(self):
