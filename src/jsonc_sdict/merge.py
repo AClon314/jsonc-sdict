@@ -595,7 +595,7 @@ for gen in merge(...):
     def __init__(
         self,
         old_new: tuple[T1, T2] | DeepDiff[T1, T2],
-        dictDict: _KwargsDictDict | None = {},
+        dictDict: _KwargsDictDict | None = None,
         deepdiff_args: Mapping[str, Any] = deepdiff_args,
         sameKey_diffValue: Type_MergeEnd = "old",
         auto: _Type_AutoDict | None = auto_old_new,
@@ -622,7 +622,7 @@ for gen in merge(...):
         Args:
             old_new: also accepct DeepDiff(t1, t2, \\*\\*merge.deepdiff_args) \n
                 will overwrite the `old`, but you can use `old2 = deepcopy(old)` and pass like `old_new=(old2, new)`, see [Destructive Merge](https://deepmerge.readthedocs.io/en/latest/guide.html#merges-are-destructive)
-            dictDict: suggest `{"idKey": "id"}`. convert `list[dict]` into `dict[dict]` with `idKey` internally, set to `None` to disable `dictDict()` pre-process. \n
+            dictDict: suggest `{"value_of_idKey": partial(get_item, keys="id")}`. convert `list[dict]` into `dict[dict]` with extracted merge-key internally, set to `None` to disable `dictDict()` pre-process. \n
                 because list[dict] is hard to merge correctly(while dict or list[int|bool|str...basic_type_not_container] is easy) \n
                 disabled when `old_new` is already DeepDiff, because dictDict() should run before DeepDiff()
             deepdiff_args: the kwargs to init DeepDiff(\\*\\*deepdiff_args), disabled when `old_new` is already DeepDiff

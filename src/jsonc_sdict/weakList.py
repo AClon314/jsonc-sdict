@@ -7,7 +7,8 @@ import sys
 from weakref import WeakKeyDictionary, WeakValueDictionary
 from collections.abc import Callable, Iterable, MutableSet, Sequence, Sized, Iterator
 from typing import Any, Protocol, overload
-from jsonc_sdict.share import RAISE, check_hashWeak
+
+from jsonc_sdict.share import RAISE
 
 
 class Comparable[V](Iterable[V], Sized, Protocol):
@@ -434,44 +435,155 @@ class OrderedWeakSet[H](MutableSet[H]):
 
 
 class Ref[V]:
-    """strong reference"""
+    """holding strong reference, let basic data type(dict/list...) escape from __weakref__ limitation of cpython"""
 
-    def __init__(self, v: V | None = None) -> None:
-        self.v = v
+    def __init__(self, v: V) -> None:
+        self._值 = v
 
-    def __hash__(self):
-        return id(self)
+    @staticmethod
+    def _unref(value: Any) -> Any:
+        if isinstance(value, Ref):
+            return value._值
+        return value
 
-    def __repr__(self):
-        return f"Ref({self.v})"
+    def _hashable(self) -> int | None:
+        try:
+            return hash(self._值)
+        except TypeError:
+            return None
+
+    def __getattr__(self, attr: str) -> Any:
+        return getattr(self._值, attr)
+
+    def __setattr__(self, attr: str, value: Any) -> None:
+        if attr == "_值":
+            object.__setattr__(self, "_值", value)
+            return
+        setattr(self._值, attr, value)
+
+    def __delattr__(self, attr: str) -> None:
+        if attr == "_值":
+            raise AttributeError(f"cannot delete {attr}")
+        delattr(self._值, attr)
+
+    def __dir__(self) -> list[str]:
+        return sorted(set(object.__dir__(self)) | set(dir(self._值)))
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._值!r})"
+
+    def __str__(self) -> str:
+        return str(self._值)
+
+    def __hash__(self) -> int:
+        if _hash := self._hashable():
+            return _hash
+        return id(self._值)
+
+    def __bool__(self) -> bool:
+        return bool(self._值)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._值(*args, **kwargs)  # type: ignore
+
+    def __iter__(self):
+        return iter(self._值)  # type: ignore
+
+    def __len__(self) -> int:
+        return len(self._值)  # type: ignore
+
+    def __contains__(self, item: object) -> bool:
+        return self._unref(item) in self._值  # type: ignore
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._值[key]  # type: ignore
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._值[key] = self._unref(value)  # type: ignore
+
+    def __delitem__(self, key: Any) -> None:
+        del self._值[key]  # type: ignore
 
     def __lt__(self, other: Any) -> bool:
-        if isinstance(other, Ref):
-            return self.v < other.v
-        return self.v < other
+        return self._值 < self._unref(other)
 
     def __le__(self, other: Any) -> bool:
+        return self._值 <= self._unref(other)
+
+    def __eq__(self, other: object) -> bool:
         if isinstance(other, Ref):
-            return self.v <= other.v
-        return self.v <= other
+            if self._hashable() and other._hashable():
+                return self._值 == other._值
+            return self._值 is other._值
+        if self._hashable():
+            return self._值 == other
+        return self._值 is other
 
-    def __eq__(self, value: object) -> bool:
-        if isinstance(value, Ref):
-            return self.v == value.v
-        return self.v == value
-
-    def __ne__(self, value: object) -> bool:
-        return not self.__eq__(value)
+    def __ne__(self, other: object) -> bool:
+        return not self == other
 
     def __gt__(self, other: Any) -> bool:
-        if isinstance(other, Ref):
-            return self.v > other.v
-        return self.v > other
+        return self._值 > self._unref(other)
 
     def __ge__(self, other: Any) -> bool:
-        if isinstance(other, Ref):
-            return self.v >= other.v
-        return self.v >= other
+        return self._值 >= self._unref(other)
 
-    def __call__(self) -> V:
-        return self.v
+    def __add__(self, other: Any) -> Any:
+        return self._值 + self._unref(other)
+
+    def __radd__(self, other: Any) -> Any:
+        return self._unref(other) + self._值
+
+    def __sub__(self, other: Any) -> Any:
+        return self._值 - self._unref(other)
+
+    def __rsub__(self, other: Any) -> Any:
+        return self._unref(other) - self._值
+
+    def __mul__(self, other: Any) -> Any:
+        return self._值 * self._unref(other)
+
+    def __rmul__(self, other: Any) -> Any:
+        return self._unref(other) * self._值
+
+    def __truediv__(self, other: Any) -> Any:
+        return self._值 / self._unref(other)
+
+    def __rtruediv__(self, other: Any) -> Any:
+        return self._unref(other) / self._值
+
+    def __floordiv__(self, other: Any) -> Any:
+        return self._值 // self._unref(other)
+
+    def __rfloordiv__(self, other: Any) -> Any:
+        return self._unref(other) // self._值
+
+    def __mod__(self, other: Any) -> Any:
+        return self._值 % self._unref(other)
+
+    def __rmod__(self, other: Any) -> Any:
+        return self._unref(other) % self._值
+
+    def __pow__(self, other: Any) -> Any:
+        return self._值 ** self._unref(other)
+
+    def __rpow__(self, other: Any) -> Any:
+        return self._unref(other) ** self._值
+
+    def __neg__(self) -> Any:
+        return -self._值  # type: ignore
+
+    def __pos__(self) -> Any:
+        return +self._值  # type: ignore
+
+    def __abs__(self) -> Any:
+        return abs(self._值)  # type: ignore
+
+    def __int__(self) -> int:
+        return int(self._值)  # type: ignore
+
+    def __float__(self) -> float:
+        return float(self._值)  # type: ignore
+
+    def __index__(self) -> int:
+        return self._值.__index__()  # type: ignore

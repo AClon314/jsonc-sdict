@@ -456,9 +456,9 @@ class dfs[K = int | Any, V = Any, CLS = "sdict"](Generator[CLS, CLS, CLS]):
         obj: Node[K, V],
         maxDepth=float("inf"),
         cls: type[CLS] | None = None,
-        getChild: dfs.GetChildFunc = get_children,
+        getChild: GetChildFunc = get_children,
         readonly=False,
-        setValue: dfs.SetValueFunc = set_item_attr,
+        setValue: SetValueFunc = set_item_attr,
         *,
         pathSeenIds: set[int] | None = None,
         forkGraph: ForkGraph | None = None,
@@ -640,41 +640,40 @@ class ddReturn[CLS = "sdict"]:
 
 
 class KwargsDictDict(TypedDict, total=False):
-    idKey: Any
-    """idKey: the keyname of unique value in dict. If not found, will raise"""
-    getValue: Callable[[Any, Any], Any]
-    """getValue(current_dict, idKey): get idKey of dict"""
+    value_of_idKey: Callable[[Any], Any]
+    """value_of_idKey(current_dict): get merge-key of each item"""
 
 
 def dictDict[CLS = "sdict"](
     gen_dfs: Iterator[CLS],
-    idKey: Any = UNSET,
-    getValue: Callable[[Any, Any], Any] | None = get_item,
+    value_of_idKey: Callable[[Any], Any] = id,
 ) -> Generator[ddYield[CLS], Hashable, ddReturn[CLS]]:
     """
-    list[dict[list...]] or dict[list[dict...]] to pure nest dict like dict[dict[dict...]], by extract `idKey` in dict
+    list[dict[list...]] or dict[list[dict...]] to pure nest dict like dict[dict[dict...]], by extract merge-key from each item
     use before `merge()`, because list[dict] is hard to merge correctly(while list[Scalar] or dict[...] is easy)
 
     ```python
-    for sdic in (idKey := dictDict(dfs(obj), idKey="id")):
-        # will auto update {..., children: [{"id":123},...]} to {..., children: {123:{...}, ...}}
-        # but if not found the idKey, will raise KeyError
+    from functools import partial
 
-    for sdic in (idKey := dictDict(dfs(obj)):
+    for sdic in dictDict(dfs(obj), value_of_idKey=partial(get_item, keys="id")):
+        # will auto update {..., children: [{"id":123},...]} to {..., children: {123:{...}, ...}}
+        # but if not found the "id", will raise KeyError
+
+    for sdic in (dd := dictDict(dfs(obj))):
         if isinstance(sdic.v, MyType):
-            idKey.send("another-IdKey")
+            dd.send("another-key")
         else:
-            pass # idKey.send(None)
-            # we use `id()` for fallback idKey, or `(id(), counter)` when id() is not unique
+            pass  # dd.send(None)
+            # default fallback is `id(current_item)`
     ```
 
-    Args:
+        Args:
         obj: dict or list, Map or Iterable
-        idKey: the keyname of unique value in dict. If not found, will raise
-        getValue(current_dict, idKey): get idKey of dict
+        value_of_idKey(current_dict): get merge-key of each item.
+            For `dict["id"]`, use `partial(get_item, keys="id")`.
 
     Raises:
-        KeyError: when all idKey is not found
+        KeyError: when `value_of_idKey()` tries to access a missing key like `"id"`
     """
     converted: list[sdict] = []
 
@@ -683,12 +682,7 @@ def dictDict[CLS = "sdict"](
         if key is NONE:
             key = None
         elif key is None:
-            if idKey is UNSET:
-                key = id(v)
-                if key in self:
-                    raise _TODO  # TODO: {123:"data", sdict(): ...} -> {123:"data", 123: ...} id(sdict()) == id(123) == 123
-            elif getValue:
-                key = getValue(v, idKey)
+            key = value_of_idKey(v)
         self.update({key: v})
         # gen.send(self) # TODO: 似乎执不执行，结果都一样？
 
@@ -702,7 +696,7 @@ def dictDict[CLS = "sdict"](
     nodes = tuple(gen_dfs)
     if not nodes:
         raise ValueError("gen_dfs is empty")
-    root = nodes[0]
+    root = cast(sdict, nodes[0])
     for self in nodes:
         Log.debug(f"{self=}")
         if not isinstance(self, sdict):

@@ -1,3 +1,4 @@
+from functools import partial
 from weakref import WeakKeyDictionary, WeakValueDictionary
 from types import MappingProxyType
 
@@ -42,6 +43,7 @@ def test_nested_helper_accessors_work_on_dicts_and_objects():
     root.child.value = 9
 
     assert get_item(data, ["a", "b", 1, "c"]) == 3
+    assert partial(get_item, keys="a")({"a": 7}) == 7
     assert get_attr(root, ["child", "value"]) == 9
     assert get_item_attr(root, ["child", "value"]) == 9
     assert get_item(data, ["missing"], default="fallback") == "fallback"
@@ -244,12 +246,16 @@ def test_un_dictDict_restores_nested_and_root_lists():
         ],
         "keep": {"value": 1},
     }
-    nested_ctx = return_of(dictDict(dfs(nested), idKey="id"))
+    nested_ctx = return_of(
+        dictDict(dfs(nested), value_of_idKey=partial(get_item, keys="id"))
+    )
     nested_restored = un_dictDict(nested_ctx)
     assert unref(nested_restored) == nested
 
     root = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
-    root_ctx = return_of(dictDict(dfs(root), idKey="id"))
+    root_ctx = return_of(
+        dictDict(dfs(root), value_of_idKey=partial(get_item, keys="id"))
+    )
     root_restored = un_dictDict(root_ctx)
     assert unref(root_restored) == root
 
@@ -270,7 +276,7 @@ def test_sdict_merge_merges_into_self_and_forwards_kwargs():
 
     result = data.merge(
         {"children": [{"id": 1, "name": "2", "new": ""}, {"id": 2, "name": "3"}]},
-        dictDict={"idKey": "id"},
+        dictDict={"value_of_idKey": partial(get_item, keys="id")},
         sameKey_diffValue="new",
     )
 

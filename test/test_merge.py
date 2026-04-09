@@ -1,6 +1,9 @@
+from functools import partial
+
 import pytest
 
 from jsonc_sdict.merge import DeepDiffProtocol, merge
+from jsonc_sdict.sdict import get_item
 from jsonc_sdict.share import are_equal
 
 
@@ -49,7 +52,11 @@ def test_merge_dictDict():
     t2 = {"children": l2, "k": "v"}
 
     merged = (
-        merge((t1, t2), dictDict={"idKey": "id"}, sameKey_diffValue="new")
+        merge(
+            (t1, t2),
+            dictDict={"value_of_idKey": partial(get_item, keys="id")},
+            sameKey_diffValue="new",
+        )
         .solve_all()
         .merged
     )

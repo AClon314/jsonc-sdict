@@ -225,9 +225,9 @@ class TestInsert:
         v5 = Ref(5)
         wl = WeakList([v1, v2])
         wl.insert(100, v5)  # 超出长度，插入到最后
-        assert (
-            wl.tuple[-1].v == 5
-        ), f"越界索引insert失败，最后一个元素应为5，实际 {wl.tuple[-1].v}"
+        assert wl.tuple[-1] == 5, (
+            f"越界索引insert失败，最后一个元素应为5，实际 {wl.tuple[-1]}"
+        )
 
     def test_insert_no_repeat(self):
         """测试noRepeat模式下的插入去重"""
@@ -245,9 +245,9 @@ class TestInsert:
         v1 = Ref(1)
         wl_empty = WeakList()
         wl_empty.insert(0, v1)
-        assert wl_empty.tuple == (
-            v1,
-        ), f"空列表insert失败，预期 (v1,)，实际 {wl_empty.tuple}"
+        assert wl_empty.tuple == (v1,), (
+            f"空列表insert失败，预期 (v1,)，实际 {wl_empty.tuple}"
+        )
 
 
 class TestPop:
@@ -283,7 +283,7 @@ class TestPop:
         wl = WeakList([v1, v2])
         default_val = Ref("default")
         popped = wl.pop(100, default=default_val)
-        assert popped.v == "default", f"pop默认值错误，预期 default，实际 {popped.v}"
+        assert popped == "default", f"pop默认值错误，预期 default，实际 {popped}"
 
     def test_pop_invalid_index_without_default(self):
         """测试无效索引且无默认值时抛出异常"""
@@ -341,9 +341,9 @@ class TestGetSetItem:
         v2 = Ref(2)
         wl_no_repeat = WeakList([v1, v2], noRepeat=True)
         wl_no_repeat[1] = v1
-        assert wl_no_repeat.tuple == (
-            v1,
-        ), f"__setitem__去重错误，预期 (v1,)，实际 {wl_no_repeat.tuple}"
+        assert wl_no_repeat.tuple == (v1,), (
+            f"__setitem__去重错误，预期 (v1,)，实际 {wl_no_repeat.tuple}"
+        )
 
 
 class TestNoRepeat:
@@ -417,7 +417,7 @@ class TestSortAndReverse:
         v9 = Ref(9)
         v10 = Ref(10)
         wl_sort = WeakList([v10, v7, v9, v1])
-        wl_sort.sort(key=lambda x: x.v, reverse=False)
+        wl_sort.sort(key=lambda x: x, reverse=False)
         assert wl_sort.tuple == (
             v1,
             v7,
@@ -468,9 +468,9 @@ class TestMiscMethods:
         v2 = Ref(2)
         wl_misc = WeakList([v1, v2])
         wl_copy = wl_misc.copy()
-        assert (
-            wl_copy.tuple == wl_misc.tuple
-        ), f"copy错误，预期 {wl_misc.tuple}，实际 {wl_copy.tuple}"
+        assert wl_copy.tuple == wl_misc.tuple, (
+            f"copy错误，预期 {wl_misc.tuple}，实际 {wl_copy.tuple}"
+        )
 
     def test_clear(self):
         """测试clear方法"""
