@@ -124,8 +124,8 @@ class WeakList[H](Sequence[H]):
 
     def __repr__(self) -> str:
         if not self:
-            return f"{self.__class__.__name__}()"
-        return f"{self.__class__.__name__}({list(self)})"
+            return f"{type(self).__name__}()"
+        return f"{type(self).__name__}({list(self)})"
 
     def __hash__(self) -> int:
         return id(self)
@@ -263,7 +263,7 @@ class WeakList[H](Sequence[H]):
         self._next_key = 0
 
     def copy(self):
-        return self.__class__(self, noRepeat=self.noRepeat)
+        return type(self)(self, noRepeat=self.noRepeat)
 
     def append(self, obj: H) -> None:
         if self.noRepeat and obj in self.dict_swap:
@@ -418,14 +418,14 @@ class OrderedWeakSet[H](MutableSet[H]):
 
     def __repr__(self) -> str:
         if not self:
-            return f"{self.__class__.__name__}()"
-        return f"{self.__class__.__name__}({list(self)})"
+            return f"{type(self).__name__}()"
+        return f"{type(self).__name__}({list(self)})"
 
     def __hash__(self) -> int:
         return id(self)
 
     def copy(self):
-        return self.__class__(self)
+        return type(self)(self)
 
     def __getitem__(self, index: int | slice) -> H | list[H]:
         if isinstance(index, slice):

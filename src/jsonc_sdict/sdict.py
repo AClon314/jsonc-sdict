@@ -419,43 +419,7 @@ get_children_noList = partial(get_children, digList=False)
 """get_children(..., digList=False)"""
 
 
-type YieldIfFunc[K, V] = Callable[[sdict[K, V], Node[K, V]], bool]
-
-type GetChildFunc[K, V] = Callable[
-    [sdict[K, V] | Any, Node[K, V]], Generator[Iterable[V], None, None] | Iterable[V]
-]
-
-type SetValueFunc = Callable[[Any, Sequence, Any], Any]
-
-
-class _KwargsDfs3(TypedDict, total=False):
-    forkGraph: ForkGraph
-    keypath: tuple
-    pathCount: PathCount
-
-
-class KwargsDfs(_KwargsDfs3, total=False):
-    # obj: Node
-    maxDepth: int | float
-    cls: type[Self] | None
-    getChild: GetChildFunc
-    readonly: bool
-    setValue: SetValueFunc
-
-
-def dfs[K = int, V = Any, CLS = "sdict"](
-    obj: Node[K, V],
-    maxDepth=float("inf"),
-    cls: type[CLS] | None = None,
-    getChild: GetChildFunc = get_children,
-    readonly=False,
-    setValue: SetValueFunc = set_item_attr,
-    *,
-    pathSeenIds: set[int] | None = None,
-    forkGraph: ForkGraph | None = None,
-    keypath: tuple = (),
-    pathCount: PathCount = (0,),
-) -> Generator[CLS]:
+class dfs[K = int | Any, V = Any, CLS = "sdict"](Generator[CLS, CLS, CLS]):
     """
     do NOT update scaned/yielded data while iterating.
     Args:
@@ -479,83 +443,175 @@ def dfs[K = int, V = Any, CLS = "sdict"](
         ...
     ```
     """
-    # print(f"{type(obj)=}")
-    if pathSeenIds is None:
-        pathSeenIds = set()
-    if forkGraph is None:
-        forkGraph = WeakKeyDictionary()
-    depth = len(pathCount) - 1
-    if not iterable(obj) or depth > maxDepth:
-        return obj
-    if cls is None:
-        cls = sdict  # type: ignore
 
-    pathCount = (*pathCount[:-1], pathCount[-1] + 1)
-    if isinstance(obj, sdict) and not readonly:
-        # update
-        self = obj
-    else:
-        data = None
-        ref = None
-        if isinstance(obj, Mapping) and not readonly:
-            data = obj
+    type GetChildFunc[K, V] = Callable[
+        ["sdict[K, V] | Any", Node[K, V]],
+        Generator[Iterable[V], None, None] | Iterable[V],
+    ]
+
+    type SetValueFunc = Callable[[Any, Sequence, Any], Any]
+
+    def __init__(
+        self,
+        obj: Node[K, V],
+        maxDepth=float("inf"),
+        cls: type[CLS] | None = None,
+        getChild: dfs.GetChildFunc = get_children,
+        readonly=False,
+        setValue: dfs.SetValueFunc = set_item_attr,
+        *,
+        pathSeenIds: set[int] | None = None,
+        forkGraph: ForkGraph | None = None,
+        keypath: tuple = (),
+        pathCount: PathCount = (0,),
+    ):
+        self.obj = obj
+        self.maxDepth = maxDepth
+        self.cls = cls
+        self.getChild = getChild
+        self.readonly = readonly
+        self.setValue = setValue
+        self.pathSeenIds = pathSeenIds
+        self.forkGraph = forkGraph
+        self.keypath = keypath
+        self.pathCount = pathCount
+        self._iter = self._new_iter()
+        self._iter_started = False
+
+    def _new_iter(self) -> Generator[CLS]:
+        # print(f"{type(obj)=}")
+        obj = self.obj
+        maxDepth = self.maxDepth
+        cls = self.cls
+        getChild = self.getChild
+        readonly = self.readonly
+        setValue = self.setValue
+        pathSeenIds = self.pathSeenIds
+        forkGraph = self.forkGraph
+        keypath = self.keypath
+        pathCount = self.pathCount
+        if pathSeenIds is None:
+            pathSeenIds = set()
+        if forkGraph is None:
+            forkGraph = WeakKeyDictionary()
+        depth = len(pathCount) - 1
+        if not iterable(obj) or depth > maxDepth:
+            return obj
+        if cls is None:
+            cls = sdict  # type: ignore
+
+        pathCount = (*pathCount[:-1], pathCount[-1] + 1)
+        if isinstance(obj, sdict) and not readonly:
+            # update
+            SELF = obj
         else:
-            # list / pydantic
-            ref = obj
-        # cls = cast(type[sdict], cls)
-        try:
-            self = cls(  # type: ignore
-                data=data,
-                ref=ref,
-                # deep==True等价于执行dfs()，所以False即可
-                deep=False,
-                forkGraph=forkGraph,
-                pathCount=pathCount,
-            )
-        except Exception as e:
-            Log.error(f"{cls=} is not sdict, fallback to positional init", exc_info=e)
-            self = cls(data if data else ref)
-    self = cast(sdict, self)
-    self.forkGraph = forkGraph
-    self.keypath = keypath  # NOTE: overwrite cache
-    self.pathCount = pathCount
+            data = None
+            ref = None
+            if isinstance(obj, Mapping) and not readonly:
+                data = obj
+            else:
+                # list / pydantic
+                ref = obj
+            # cls = cast(type[sdict], cls)
+            try:
+                SELF = cls(  # type: ignore
+                    data=data,
+                    ref=ref,
+                    # deep==True等价于执行dfs()，所以False即可
+                    deep=False,
+                    forkGraph=forkGraph,
+                    pathCount=pathCount,
+                )
+            except Exception as e:
+                Log.error(
+                    f"{cls=} is not sdict, fallback to positional init", exc_info=e
+                )
+                SELF = cls(data if data else ref)
+        SELF = cast(sdict, SELF)
+        SELF.forkGraph = forkGraph
+        SELF.keypath = keypath  # NOTE: overwrite cache
+        SELF.pathCount = pathCount
 
-    newSelf = yield self
-    if newSelf is not None:
-        self = None if newSelf is NONE else newSelf
-    if depth >= maxDepth:
+        newSelf = yield SELF
+        if newSelf is not None:
+            SELF = None if newSelf is NONE else newSelf
+        if depth >= maxDepth:
+            return SELF
+
+        children = getChild(SELF, obj)
+        pathSeenIds = pathSeenIds | {id(obj)}
+        for i, (k, v) in enumerate(children):
+            if not iterable(v) or id(v) in pathSeenIds:
+                continue
+            _keypath = (*keypath, k)
+            _pathCount = (*pathCount, i)
+            ret = yield from type(self)(
+                v,
+                maxDepth=maxDepth,
+                cls=cls,
+                getChild=getChild,
+                readonly=readonly,
+                setValue=setValue,
+                pathSeenIds=pathSeenIds,
+                forkGraph=forkGraph,
+                keypath=_keypath,
+                pathCount=_pathCount,
+            )
+            if isinstance(ret, sdict):
+                pk2cn: WeakValueDictionary[Any, CLS] = forkGraph.get(SELF)
+                """parent key to child nodes"""
+                if pk2cn is None:
+                    pk2cn = WeakValueDictionary()
+                    forkGraph[SELF] = pk2cn
+                pk2cn[k] = ret
+            if not readonly:
+                # substitute python dict to sdict
+                setValue(SELF, k, ret)  # self[k] = ret
+        return SELF
+
+    def __iter__(self) -> Self:
         return self
 
-    children = getChild(self, obj)
-    pathSeenIds = pathSeenIds | {id(obj)}
-    for i, (k, v) in enumerate(children):
-        if not iterable(v) or id(v) in pathSeenIds:
-            continue
-        _keypath = (*keypath, k)
-        _pathCount = (*pathCount, i)
-        ret = yield from dfs(
-            v,
-            maxDepth=maxDepth,
-            cls=cls,
-            getChild=getChild,
-            readonly=readonly,
-            setValue=setValue,
-            pathSeenIds=pathSeenIds,
-            forkGraph=forkGraph,
-            keypath=_keypath,
-            pathCount=_pathCount,
-        )
-        if isinstance(ret, sdict):
-            pk2cn: WeakValueDictionary[Any, CLS] = forkGraph.get(self)
-            """parent key to child nodes"""
-            if pk2cn is None:
-                pk2cn = WeakValueDictionary()
-                forkGraph[self] = pk2cn
-            pk2cn[k] = ret
-        if not readonly:
-            # substitute python dict to sdict
-            setValue(self, k, ret)  # self[k] = ret
-    return self
+    def __next__(self) -> CLS:
+        ret = next(self._iter)
+        if not self._iter_started:
+            self._iter_started = True
+        return ret
+
+    def send(self, value):
+        """```python
+        gen.send(MY_NEW_NODE) # will set current node as `MY_NEW_NODE`
+        gen.send(NONE) # will set to `None`
+        gen.send(None) # won't set
+        ```
+        """
+        return self._iter.send(value)
+
+    @copy_args(Generator.throw)
+    def throw(self, *args, **kw):
+        return self._iter.throw(*args, **kw)
+
+    @copy_args(Generator.close)
+    def close(self):
+        return self._iter.close()
+
+    class _Kwargs(TypedDict, total=False):
+        """maintained internally"""
+
+        pathSeenIds: set[int]
+        forkGraph: ForkGraph
+        keypath: tuple
+        pathCount: PathCount
+
+    class Kwargs(_Kwargs, total=False):
+        """need user explicity declare"""
+
+        # obj: Node
+        maxDepth: int | float
+        cls: type[Self] | None
+        getChild: "dfs.GetChildFunc"
+        readonly: bool
+        setValue: "dfs.SetValueFunc"
 
 
 # ------------------------------------------------------------
@@ -591,7 +647,7 @@ class KwargsDictDict(TypedDict, total=False):
 
 
 def dictDict[CLS = "sdict"](
-    gen_dfs: Generator[CLS],
+    gen_dfs: Iterator[CLS],
     idKey: Any = UNSET,
     getValue: Callable[[Any, Any], Any] | None = get_item,
 ) -> Generator[ddYield[CLS], Hashable, ddReturn[CLS]]:
@@ -762,7 +818,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         parent: WeakList[Self]
         forkGraph: ForkGraph[Any]
         pathCount: PathCount
-        getChild: GetChildFunc
+        getChild: dfs.GetChildFunc
 
     def __init__(
         self,
@@ -772,7 +828,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         deep=True,
         forkGraph: ForkGraph[Any] | None = None,
         pathCount: PathCount = (0,),
-        getChild: GetChildFunc = get_children,
+        getChild: dfs.GetChildFunc = get_children,
     ):
         """
         Args:
@@ -962,19 +1018,19 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             v = v[path]
             return v
         except Exception as e:
-            raise TypeError(f"Expected {self.__class__}, got {type(v)}") from e
+            raise TypeError(f"Expected {type(self)}, got {type(v)}") from e
 
     def __hash__(self):
         return id(self)
 
     # def __eq__(self, value: object) -> bool:
-    #     if isinstance(value, self.__class__):
+    #     if isinstance(value, type(self)):
     #         return self.v == value.v
     #     return self.v == value
 
     def __repr__(self) -> str:
         r = super().__repr__()
-        return r if self.repr else r[len(self.__class__.__name__) + 1 : -1] or "{}"
+        return r if self.repr else r[len(type(self).__name__) + 1 : -1] or "{}"
 
     @copy_args(OrderedDict.__ior__)
     def __ior__(self, value):
@@ -1051,7 +1107,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
                 parent[new_key] = old_value
                 return True
 
-            if isinstance(parent, self.__class__):
+            if isinstance(parent, type(self)):
                 parent.insert({new_key: parent[old_key]}, key=old_key)
                 del parent[old_key]
                 return True
@@ -1197,8 +1253,8 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         maxDepth=float("inf"),
         digList=True,
         slice: slice = slice(None),
-        getChild: GetChildFunc = get_children,
-        **kwargs: Unpack[_KwargsDfs3],
+        getChild: dfs.GetChildFunc = get_children,
+        **kwargs: Unpack[dfs._Kwargs],
     ) -> Generator[tuple, Never, None]:
         """
         like benedict.keypaths()
@@ -1216,8 +1272,8 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         maxDepth=float("inf"),
         digList=True,
         slice: slice = slice(None),
-        getChild: GetChildFunc = get_children,
-        **kwargs: Unpack[_KwargsDfs3],
+        getChild: dfs.GetChildFunc = get_children,
+        **kwargs: Unpack[dfs._Kwargs],
     ) -> Generator[Self, Never, None]:
         """
         Args:
@@ -1234,8 +1290,8 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         maxDepth=float("inf"),
         digList=True,
         slice: slice = slice(None),
-        getChild: GetChildFunc = get_children,
-        **kwargs: Unpack[_KwargsDfs3],
+        getChild: dfs.GetChildFunc = get_children,
+        **kwargs: Unpack[dfs._Kwargs],
     ) -> Generator[tuple[tuple, Self], Any, None]:
         """
         Args:
@@ -1245,41 +1301,34 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         if digList is False:
             getChild = get_children_noList
         for v in tuple(self.dfs(maxDepth=maxDepth, getChild=getChild, **kwargs)):
-            if isinstance(v, self.__class__) and in_range(v.depth, slice):
+            if isinstance(v, type(self)) and in_range(v.depth, slice):
                 NEW = yield v.keypath, v
                 if NEW is not None:
                     if NEW is NONE:
                         NEW = None
                     self[v.keypath] = NEW
 
-    def _dfs_kwargs(self) -> _KwargsDfs3:
-        seed = (*self.pathCount[:-1], max(self.pathCount[-1] - 1, 0))
-        return {
-            "forkGraph": self.forkGraph,
-            "keypath": self.keypath,
-            "pathCount": seed,
-        }
-
     def dfs(
         self,
         maxDepth=float("inf"),
-        getChild: GetChildFunc = get_children,
+        getChild: dfs.GetChildFunc = get_children,
         readonly=False,
         setValue=set_item_attr,
-        **kwargs: Unpack[_KwargsDfs3],
-    ) -> Generator[Self, Any, Self]:
+        **kwargs: Unpack[dfs._Kwargs],
+    ) -> dfs[K, V, Self]:
         """
         see `dfs(**kwargs)`
         """
-        for k, v in self._dfs_kwargs().items():
-            kwargs.setdefault(k, v)
-        return dfs(  # type: ignore
+        return dfs(
             self.v,
-            cls=self.__class__,  # type: ignore
+            cls=type(self),
             maxDepth=maxDepth,
             getChild=getChild,
             readonly=readonly,
             setValue=setValue,
+            forkGraph=self.forkGraph,
+            keypath=self.keypath,
+            pathCount=(*self.pathCount[:-1], max(self.pathCount[-1] - 1, 0)),
             **kwargs,
         )
 

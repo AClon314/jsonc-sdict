@@ -309,13 +309,13 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     def data(self) -> Self:
         """data only, no comment"""
         # TODO
-        view = self.__class__(self)
+        view = type(self)(self)
         return view
 
     def comments(self) -> Self:
         """comments only, no data"""
         # TODO
-        view = self.__class__(self)
+        view = type(self)(self)
         return view
 
     @cached_property
