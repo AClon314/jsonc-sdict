@@ -40,6 +40,7 @@ from jsonc_sdict.share import (
     NONE,
     copy_args,
     args_of_type,
+    isFlatIterable,
     iterable,
     iSlice,
     in_range,
@@ -444,9 +445,8 @@ class dfs[K = int | Any, V = Any, CLS = "sdict"](Generator[CLS, CLS, CLS]):
     ```
     """
 
-    type GetChildFunc[K, V] = Callable[
-        ["sdict[K, V] | Any", Node[K, V]],
-        Generator[Iterable[V], None, None] | Iterable[V],
+    type GetChildFunc = Callable[
+        ["sdict[K, V] | Any", Node[K, V]], Iterable[tuple[K, V]]
     ]
 
     type SetValueFunc = Callable[[Any, Sequence, Any], Any]
@@ -478,7 +478,7 @@ class dfs[K = int | Any, V = Any, CLS = "sdict"](Generator[CLS, CLS, CLS]):
         self._iter = self._new_iter()
         self._iter_started = False
 
-    def _new_iter(self) -> Generator[CLS]:
+    def _new_iter(self) -> Generator[CLS, Any, CLS | Any | None]:
         # print(f"{type(obj)=}")
         obj = self.obj
         maxDepth = self.maxDepth
@@ -512,7 +512,7 @@ class dfs[K = int | Any, V = Any, CLS = "sdict"](Generator[CLS, CLS, CLS]):
             else:
                 # list / pydantic
                 ref = obj
-            # cls = cast(type[sdict], cls)
+            cls = cast(type[sdict], cls)
             try:
                 SELF = cls(  # type: ignore
                     data=data,
@@ -867,10 +867,10 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             pass
         self.del_cache()
 
-    _Type_Cached = Literal["unref", "height", "childkeys"]
+    _Type_Cached = Literal["keypath"]
     _cached = args_of_type(_Type_Cached)
-    _cached_parent = ()
-    _cached_child = ("unref", "childkeys")
+    _cached_parent = ("keypath",)
+    _cached_child = ()
 
     def del_cache(
         self,
@@ -902,7 +902,6 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             return self.ref()
         return self.ref
 
-    @cached_property
     def unref(self):
         """deep unref all `sdict.v`, used for `json.dumps(sd.unref)`"""
         return unref(self.v)
@@ -1245,6 +1244,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     def keys_flat(
         self,
         maxDepth=float("inf"),
+        digLeaf=False,
         digList=True,
         slice: slice = slice(None),
         getChild: dfs.GetChildFunc = get_children,
@@ -1257,13 +1257,19 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             **kwargs: passed to `dfs()`
         """
         for K, _ in self.items_flat(
-            maxDepth=maxDepth, digList=digList, slice=slice, getChild=getChild, **kwargs
+            maxDepth=maxDepth,
+            digLeaf=digLeaf,
+            digList=digList,
+            slice=slice,
+            getChild=getChild,
+            **kwargs,
         ):
             yield K
 
     def values_flat(
         self,
         maxDepth=float("inf"),
+        digLeaf=False,
         digList=True,
         slice: slice = slice(None),
         getChild: dfs.GetChildFunc = get_children,
@@ -1275,32 +1281,56 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             **kwargs: passed to `dfs()`
         """
         for _, v in self.items_flat(
-            maxDepth=maxDepth, digList=digList, slice=slice, getChild=getChild, **kwargs
+            maxDepth=maxDepth,
+            digLeaf=digLeaf,
+            digList=digList,
+            slice=slice,
+            getChild=getChild,
+            **kwargs,
         ):
             yield v
 
     def items_flat(
         self,
         maxDepth=float("inf"),
+        digLeaf=False,
         digList=True,
         slice: slice = slice(None),
         getChild: dfs.GetChildFunc = get_children,
-        **kwargs: Unpack[dfs._Kwargs],
+        **kwargs: Unpack[dfs.Kwargs],  # type: ignore
     ) -> Generator[tuple[tuple, Self], Any, None]:
         """
         Args:
+            digLeaf: default False. if True, the result's of {a:{b:1}} will be `(a,b), 1` instead of `(a) {b:1}`
             digList: set False if you only want dict-dict-dict, instead of dict-list-dict...
             **kwargs: passed to `dfs()`
         """
         if digList is False:
             getChild = get_children_noList
-        for v in tuple(self.dfs(maxDepth=maxDepth, getChild=getChild, **kwargs)):
-            if isinstance(v, type(self)) and in_range(v.depth, slice):
-                NEW = yield v.keypath, v
-                if NEW is not None:
-                    if NEW is NONE:
-                        NEW = None
-                    self[v.keypath] = NEW
+        kw = dict(maxDepth=maxDepth, getChild=getChild)
+        kw.update(kwargs)
+        gen_dfs = self.dfs(**kw)
+        next(gen_dfs)  # skip root
+        for node in tuple(gen_dfs):
+            if (
+                isinstance(node, type(self))
+                and in_range(node.depth, slice)
+                and isFlatIterable(node.v)
+            ):
+                if digLeaf:
+                    gen_leaf = (
+                        ((*node.keypath, k), v) for k, v in getChild(node, node.v)
+                    )
+                else:
+                    gen_leaf = ((node.keypath, node),)
+
+                for kp, v in gen_leaf:
+                    # NOTE: v =  scale_value(int/str...) if digLeaf else container_at_leaf(dict/list...)
+                    NEW = yield kp, v
+                    if NEW is not None:
+                        if NEW is NONE:
+                            NEW = None
+                        self[node.keypath] = NEW
 
     def dfs(
         self,
@@ -1310,11 +1340,9 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         setValue=set_item_attr,
         **kwargs: Unpack[dfs._Kwargs],
     ) -> dfs[K, V, Self]:
-        """
-        see `dfs(**kwargs)`
-        """
-        return dfs(
-            self.v,
+        """see `dfs(**kwargs)`"""
+        pathCount = (*self.pathCount[:-1], max(self.pathCount[-1] - 1, 0))
+        kw = dict(
             cls=type(self),
             maxDepth=maxDepth,
             getChild=getChild,
@@ -1322,9 +1350,10 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             setValue=setValue,
             forkGraph=self.forkGraph,
             keypath=self.keypath,
-            pathCount=(*self.pathCount[:-1], max(self.pathCount[-1] - 1, 0)),
-            **kwargs,
+            pathCount=pathCount,
         )
+        kw.update(kwargs)
+        return dfs(obj=self.v, **kw)
 
     def insert(
         self,
@@ -1413,6 +1442,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """upstream from root. Use this when shared objects create multiple paths to the same node."""
         return (nk.keypath for nk in self._upstreamPaths)
 
+    # NOTE: 需要重新赋值的才用 @cached_property
     @cached_property
     def keypath(self) -> tuple:
         """of the current iteration. This is unstable for shared nodes; use `.keypaths` in that case."""
@@ -1502,18 +1532,12 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """deepest leaf node"""
         return self.deepests[0]
 
-    @cached_property
+    @property
     def height(self):
-        """
-        from leaves
-        currently not implement signal dict like angular, so you need manually del cache
-        """
+        """from leaves"""
         return max((node.depth for node in self.values_flat()), default=0)
 
-    @cached_property
+    @property
     def childkeys(self):
-        """
-        `del sdict.childkeys` to refresh cache
-        currently not implement signal dict like angular, so you need manually del cache
-        """
+        """`del sdict.childkeys` to refresh cache"""
         return tuple(dfs(self.v, maxDepth=1))  # TODO: 逻辑不对

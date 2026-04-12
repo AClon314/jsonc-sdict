@@ -1,8 +1,6 @@
 from functools import partial
-from weakref import WeakKeyDictionary, WeakValueDictionary
 from types import MappingProxyType
-
-import pytest
+from weakref import WeakKeyDictionary, WeakValueDictionary
 
 from jsonc_sdict.sdict import (
     all_path,
@@ -20,17 +18,6 @@ from jsonc_sdict.sdict import (
     unref,
 )
 from jsonc_sdict.share import NONE, return_of
-
-
-@pytest.fixture(autouse=True)
-def compat_sdict_cache():
-    old = getattr(sdict, "_cached", None)
-    sdict._cached = {"height", "childkeys", "unref"}
-    yield
-    if old is None:
-        delattr(sdict, "_cached")
-    else:
-        sdict._cached = old
 
 
 def test_nested_helper_accessors_work_on_dicts_and_objects():
@@ -329,15 +316,20 @@ def test_sdict_getitem_slice_returns_flattened_descendants():
     assert [value.v for value in values] == [{"b": 1}, {"y": 2}]
 
 
-def test_sdict_del_cache_keeps_requested_cached_values():
+def test_sdict_del_cache_keeps_requested_keypath_cache():
     data = sdict({"a": {"b": 1}})
-    _ = data.childkeys
-    _ = data.unref
+    child = data["a"]
 
-    data.del_cache(without=("childkeys",))
+    assert "keypath" in child.__dict__
 
-    assert "childkeys" in data.__dict__
-    assert "unref" not in data.__dict__
+    child.del_cache(without=("keypath",))
+
+    assert child.keypath == ("a",)
+    assert "keypath" in child.__dict__
+
+    child.del_cache()
+
+    assert "keypath" not in child.__dict__
 
 
 def test_sdict_v_returns_self_in_data_mode():
@@ -349,7 +341,7 @@ def test_sdict_v_returns_self_in_data_mode():
 def test_sdict_unref_property_returns_plain_nested_data():
     data = sdict({"a": {"b": 1}})
 
-    assert data.unref == {"a": {"b": 1}}
+    assert data.unref() == {"a": {"b": 1}}
 
 
 def test_sdict_is_nestKeys_excludes_strings():
@@ -489,7 +481,7 @@ def test_sdict_rename_key_deep_updates_nested_mappings():
     data.rebuild()
     data.rename_key("old", "new", deep=True)
 
-    assert data.unref == {"a": {"new": 1}, "b": {"new": 2}}
+    assert data.unref() == {"a": {"new": 1}, "b": {"new": 2}}
 
 
 def test_sdict_rename_key_without_old_renames_current_node_in_parent():
@@ -505,23 +497,34 @@ def test_sdict_rename_key_without_old_renames_current_node_in_parent():
 def test_sdict_keys_flat_readonly_returns_keypaths():
     data = sdict({"a": {"b": 1}}, deep=False)
 
-    assert list(data.keys_flat(readonly=True)) == [(), ("a",)]
+    assert list(data.keys_flat(readonly=True, digLeaf=True)) == [("a", "b")]
 
 
 def test_sdict_values_flat_readonly_returns_nodes():
     data = sdict({"a": {"b": 1}}, deep=False)
     values = list(data.values_flat(readonly=True))
 
-    assert [value.v for value in values] == [{"a": {"b": 1}}, {"b": 1}]
+    assert [value.v for value in values] == [{"b": 1}]
 
 
-def test_sdict_items_flat_readonly_returns_pairs():
-    data = sdict({"a": {"b": 1}}, deep=False)
+def test_sdict_items_flat_readonly():
+    data = sdict({"a": {"b": {"c": 1}}, "b": {"c": 2}}, deep=False)
     items = list(data.items_flat(readonly=True))
 
+    # NOTE: valve.v because deep==False
     assert [(key, value.v) for key, value in items] == [
-        ((), {"a": {"b": 1}}),
-        (("a",), {"b": 1}),
+        (("a", "b"), {"c": 1}),
+        (("b",), {"c": 2}),
+    ]
+
+
+def test_sdict_items_flat_digLeaf():
+    data = sdict({"a": {"b": {"c": 1}}, "b": {"c": 2}}, deep=False)
+    items = list(data.items_flat(readonly=True, digLeaf=True))
+
+    assert [(key, value) for key, value in items] == [
+        (("a", "b", "c"), 1),
+        (("b", "c"), 2),
     ]
 
 
@@ -639,12 +642,12 @@ def test_sdict_childkeys_returns_root_and_direct_children():
 def test_sdict_child_caches_are_invalidated_after_top_level_mutation():
     data = sdict({"a": {"b": 1}})
 
-    assert data.unref == {"a": {"b": 1}}
+    assert data.unref() == {"a": {"b": 1}}
     assert len(data.childkeys) == 2
 
     data["x"] = {"y": 2}
 
-    assert data.unref == {"a": {"b": 1}, "x": {"y": 2}}
+    assert data.unref() == {"a": {"b": 1}, "x": {"y": 2}}
     assert [node.keypath for node in data.childkeys] == [(), ("a",), ("x",)]
 
 
@@ -671,6 +674,6 @@ def test_sdict_height_reports_max_nested_depth():
 def test_sdict_deepests_reports_deepest_descendants_from_current_node():
     data = sdict({"a": {"b": 1}, "x": {"y": {"z": 2}}})
 
-    assert tuple(node.unref for node in data.deepests) == ({"z": 2},)
+    assert tuple(node.unref() for node in data.deepests) == ({"z": 2},)
     assert data["a"].deepest is data["a"]
     assert data["x"].deepest is data["x", "y"]

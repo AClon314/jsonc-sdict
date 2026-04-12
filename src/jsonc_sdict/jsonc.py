@@ -6,7 +6,7 @@ comment-keyname rules:
 | --- | --- | --- |
 | `//` | single-line comment, inline mode | **after** current value/comma, stay in line with value |
 | `//\\n` | single-line comment, line-above mode | independent line before next key/value |
-| `/*` | block comment (default) | **after** comma`,`, stay in line with value |
+| `/* ` | block comment (default) | **after** comma`,`, stay in line with value |
 | `/*\\n` | block comment, line-above mode | independent line before next key/value |
 | `/*,` | block comment before comma | placed before comma of current item |
 | `/*k` | block comment before key slot | before JSON key token |
@@ -18,7 +18,6 @@ comment-keyname rules:
 
 import json
 from dataclasses import dataclass
-from functools import cached_property
 from collections.abc import Callable, Mapping, Sequence, Iterable, MutableSequence
 from typing import Any, Unpack, Literal, cast, overload, Self
 from warnings import deprecated
@@ -85,8 +84,6 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     _auto_count = 0
     """for unique keyname gen"""
     _auto_suffix = "-auto"
-
-    _Type_Cached = Literal["body"] | sdict._Type_Cached
 
     def __init_subclass__(cls) -> None:
         cls._comment_prefixes = args_of_type(cls._Type_CommentPrefix)
@@ -276,14 +273,17 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         return CommentData(prefix=prefix, name=name)
 
     def loads(self, raw="", has_comment: bool = False) -> Mapping:
-        """bake `self` dict with `raw` hint"""
+        """bake `self` data-only-dict with hint from `raw` (like `self`'s crutch🦯)"""
         if has_comment and not raw:
             return self
         raw = raw.replace("\r", "")
         # n = len(raw)
         # comment_index = 0
-        # TODO: 搜索token, 鸭子类型支持读取 半支持round-trip的 注释元信息 __COMMENTS__
-        for obj in self.dfs():
+        
+        # NOTE:has_comment为false时，需要额外记录forceDataKeys
+        # TODO: 搜索token
+        keypath = ()
+        for kp in list(self.keys_flat()):
             if isinstance(obj.v, Mapping):
                 for key in list(obj.keys()):
                     comment = self.split_key(key)
@@ -308,17 +308,17 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
 
     def data(self) -> Self:
         """data only, no comment"""
-        # TODO
+        # TODO: implement this
         view = type(self)(self)
         return view
 
     def comments(self) -> Self:
         """comments only, no data"""
-        # TODO
+        # TODO: implement this
         view = type(self)(self)
         return view
 
-    @cached_property
+    @property
     def body(self) -> str:
         return self.dumps()
 
@@ -374,7 +374,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         | --- | --- | --- |
         | `//` | single-line comment, inline mode | **after** current value/comma, stay in line with value |
         | `//\\n` | single-line comment, line-above mode | independent line before next key/value |
-        | `/*` | block comment (default) | **after** comma`,`, stay in line with value |
+        | `/* ` | block comment (default) | **after** comma`,`, stay in line with value |
         | `/*\\n` | block comment, line-above mode | independent line before next key/value |
         | `/*,` | block comment before comma | placed before comma of current item |
         | `/*k` | block comment before key slot | before JSON key token |
@@ -382,6 +382,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         | `/*v` | block comment before value slot | after colon, before value |
         | `/-` | slash_dash comment | comments out a whole subtree (KDL-like style) |
         """
+        # TODO: adjust to latest rule
         if has_comment:
             comments = {
                 k for k in update if self.split_key(k) and k in self.forceDataKeys
@@ -549,20 +550,6 @@ class hjsonDict[K = str, V = Any](jsoncDict[K, V]):
                 continue
             return c, i
         return None, -1
-
-    def load(self, raw: str) -> str:
-        first, _ = self._first_significant_char(raw)
-        rootless_object = first not in ("{", "[", None) and isinstance(self.v, Mapping)
-        self._rootless_object = rootless_object
-        if not rootless_object:
-            return super().loads(raw)
-
-        wrapped = "{\n" + raw + "\n}"
-        body = super().loads(wrapped)
-        self.header = ""
-        self.footer = ""
-        self.bodyEdge = 0, len(raw)
-        return body
 
     def dumps(self, obj: Mapping | Sequence | None = None, depth=0) -> str:
         rendered = super().dumps(obj=obj, depth=depth)
