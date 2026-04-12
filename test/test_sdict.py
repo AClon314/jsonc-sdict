@@ -310,7 +310,6 @@ def test_sdict_rebuild_wraps_nested_mapping_after_shallow_init():
 
 def test_sdict_getitem_slice_returns_flattened_descendants():
     data = sdict({"a": {"b": 1}, "x": {"y": 2}}, deep=False)
-
     values = data[1:]
 
     assert [value.v for value in values] == [{"b": 1}, {"y": 2}]
@@ -494,22 +493,22 @@ def test_sdict_rename_key_without_old_renames_current_node_in_parent():
     assert data["renamed", "value"] == 1
 
 
-def test_sdict_keys_flat_readonly_returns_keypaths():
+def test_sdict_keys_flat_digLeaf():
     data = sdict({"a": {"b": 1}}, deep=False)
 
     assert list(data.keys_flat(readonly=True, digLeaf=True)) == [("a", "b")]
 
 
-def test_sdict_values_flat_readonly_returns_nodes():
+def test_sdict_values_flat_notDigLeaf():
     data = sdict({"a": {"b": 1}}, deep=False)
-    values = list(data.values_flat(readonly=True))
+    values = list(data.values_flat(readonly=True, digLeaf=False))
 
     assert [value.v for value in values] == [{"b": 1}]
 
 
-def test_sdict_items_flat_readonly():
+def test_sdict_leaves():
     data = sdict({"a": {"b": {"c": 1}}, "b": {"c": 2}}, deep=False)
-    items = list(data.items_flat(readonly=True))
+    items = list(data.leaves)
 
     # NOTE: valve.v because deep==False
     assert [(key, value.v) for key, value in items] == [
@@ -525,6 +524,15 @@ def test_sdict_items_flat_digLeaf():
     assert [(key, value) for key, value in items] == [
         (("a", "b", "c"), 1),
         (("b", "c"), 2),
+    ]
+
+
+def test_sdict_items_flat_slice_supports_negative_depth_index():
+    data = sdict({"a": {"b": {"c": 1}}, "b": {"c": 2}}, deep=False)
+    items = list(data.items_flat(readonly=True, digLeaf=False, slice=slice(-1, None)))
+
+    assert [(key, value.v) for key, value in items] == [
+        (("a", "b"), {"c": 1}),
     ]
 
 

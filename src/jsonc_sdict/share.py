@@ -185,48 +185,35 @@ def yields_of[Y, S, R = None](
         return yields, e.value
 
 
-def in_range(v: int, Slice: slice) -> bool:
-    """v in_range of Slice?"""
-    # 类型校验：确保v是整数
-    if not isinstance(v, int):
-        raise TypeError(f"{type(v)=},but should be int")
-
-    # 提取切片的核心参数，设置默认值（匹配Python原生slice逻辑）
-    start = Slice.start if Slice.start is not None else 0
-    stop = Slice.stop
+def in_range(i: int, Slice: slice, total: int | None = None) -> bool:
+    """i in_range of Slice.
+    Args:
+        total: \\>=0. Set this as `i`'s max/len, if you want [:-1] negative index support.
+    """
+    assert isinstance(i, int), f"{type(i)=},but should be int"
+    assert total is None or total >= 0, f"{total=} should >= 0"
     step = Slice.step if Slice.step is not None else 1
-
-    # 处理step=0的非法场景
     if step == 0:
         raise ValueError("slice step cannot be zero")
 
-    # 无步长（step=1）的基础判断逻辑
-    if step == 1:
-        # 处理start边界：start为None/≤v 则满足
-        start_ok = v >= start
-        # 处理stop边界：stop为None 或 v < stop 则满足
-        stop_ok = stop is None or v < stop
-        return start_ok and stop_ok
+    if total is not None:
+        if i < 0:
+            i += total
+        if not 0 <= i < total:
+            return False
+        return i in range(*Slice.indices(total))
 
-    # 有步长的复杂判断逻辑（覆盖正负步长、stop=None场景）
-    else:
-        # 场景1：stop为None（无终止边界）
-        if stop is None:
-            # 正步长：v ≥ start 且 (v - start) 能被step整除 且 差值≥0
-            if step > 0:
-                return v >= start and (v - start) % step == 0 and (v - start) >= 0
-            # 负步长：v ≤ start 且 (v - start) 能被step整除 且 差值≤0
-            else:
-                return v <= start and (v - start) % step == 0 and (v - start) <= 0
+    start = Slice.start if Slice.start is not None else (0 if step > 0 else -1)
+    stop = Slice.stop
 
-        # 场景2：stop不为None（有终止边界）
-        else:
-            # 正步长：start ≤ v < stop 且 (v - start) 能被step整除
-            if step > 0:
-                return start <= v < stop and (v - start) % step == 0
-            # 负步长：stop < v ≤ start 且 (v - start) 能被step整除
-            else:
-                return stop < v <= start and (v - start) % step == 0
+    if stop is None:
+        if step > 0:
+            return i >= start and (i - start) % step == 0
+        return i <= start and (i - start) % step == 0
+
+    if step > 0:
+        return start <= i < stop and (i - start) % step == 0
+    return stop < i <= start and (i - start) % step == 0
 
 
 def len_slice(len: int, Slice: slice) -> int:

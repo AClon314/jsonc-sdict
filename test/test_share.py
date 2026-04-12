@@ -34,6 +34,10 @@ def test_in_range():
     assert not in_range(4, slice(1, None, 2))
     assert in_range(4, slice(5, 0, -1))
     assert not in_range(0, slice(5, 0, -1))
+    assert in_range(4, slice(-2, None), total=5)
+    assert in_range(-1, slice(-2, None), total=5)
+    assert not in_range(4, slice(None, -1), total=5)
+    assert in_range(-1, slice(None, None, -1), total=5)
 
 
 def test_len_slice():

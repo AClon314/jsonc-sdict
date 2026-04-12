@@ -938,7 +938,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         - after rebuild(), return `sdict` that wraps actual value
         """
         if isinstance(key, slice):
-            v = [x for x in self.values_flat(slice=key)]
+            v = [x for x in self.values_flat(slice=key, digLeaf=False)]
         elif self.use_ref or self.is_nestKeys(key):
             # key is list / tuple
             v = self.getitem(key)
@@ -1244,56 +1244,60 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     def keys_flat(
         self,
         maxDepth=float("inf"),
-        digLeaf=False,
+        digLeaf=True,
         digList=True,
         slice: slice = slice(None),
         getChild: dfs.GetChildFunc = get_children,
-        **kwargs: Unpack[dfs._Kwargs],
+        **kwargs: Unpack[dfs.Kwargs],  # type: ignore
     ) -> Generator[tuple, Never, None]:
         """
         like benedict.keypaths()
         Args:
+            digLeaf: default False. if True, the result's of {a:{b:1}} will be `(a,b),1` instead of `(a),{b:1}`
             digList: set False if you only want dict-dict-dict, instead of dict-list-dict...
             **kwargs: passed to `dfs()`
         """
-        for K, _ in self.items_flat(
+        kw = dict(
             maxDepth=maxDepth,
             digLeaf=digLeaf,
             digList=digList,
             slice=slice,
             getChild=getChild,
-            **kwargs,
-        ):
-            yield K
+        )
+        kw.update(kwargs)  # type: ignore
+        for k, _ in self.items_flat(**kw):
+            yield k
 
     def values_flat(
         self,
         maxDepth=float("inf"),
-        digLeaf=False,
+        digLeaf=True,
         digList=True,
         slice: slice = slice(None),
         getChild: dfs.GetChildFunc = get_children,
-        **kwargs: Unpack[dfs._Kwargs],
+        **kwargs: Unpack[dfs.Kwargs],  # type: ignore
     ) -> Generator[Self, Never, None]:
         """
         Args:
+            digLeaf: default False. if True, the result's of {a:{b:1}} will be `(a,b),1` instead of `(a),{b:1}`
             digList: set False if you only want dict-dict-dict, instead of dict-list-dict...
             **kwargs: passed to `dfs()`
         """
-        for _, v in self.items_flat(
+        kw = dict(
             maxDepth=maxDepth,
             digLeaf=digLeaf,
             digList=digList,
             slice=slice,
             getChild=getChild,
-            **kwargs,
-        ):
+        )
+        kw.update(kwargs)  # type: ignore
+        for _, v in self.items_flat(**kw):
             yield v
 
     def items_flat(
         self,
         maxDepth=float("inf"),
-        digLeaf=False,
+        digLeaf=True,
         digList=True,
         slice: slice = slice(None),
         getChild: dfs.GetChildFunc = get_children,
@@ -1301,20 +1305,22 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     ) -> Generator[tuple[tuple, Self], Any, None]:
         """
         Args:
-            digLeaf: default False. if True, the result's of {a:{b:1}} will be `(a,b), 1` instead of `(a) {b:1}`
+            digLeaf: if True, the result's of {a:{b:1}} will be `(a,b),1` instead of `(a),{b:1}`
             digList: set False if you only want dict-dict-dict, instead of dict-list-dict...
             **kwargs: passed to `dfs()`
         """
         if digList is False:
             getChild = get_children_noList
-        kw = dict(maxDepth=maxDepth, getChild=getChild)
-        kw.update(kwargs)
+        kw = dict(maxDepth=maxDepth, getChild=getChild, readonly=True)
+        kw.update(kwargs)  # type: ignore
         gen_dfs = self.dfs(**kw)
         next(gen_dfs)  # skip root
-        for node in tuple(gen_dfs):
+        nodes = tuple(gen_dfs)
+        total = max((node.depth for node in nodes), default=-1) + 1
+        for node in nodes:
             if (
                 isinstance(node, type(self))
-                and in_range(node.depth, slice)
+                and in_range(node.depth, slice, total=total)
                 and isFlatIterable(node.v)
             ):
                 if digLeaf:
@@ -1331,6 +1337,10 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
                         if NEW is NONE:
                             NEW = None
                         self[node.keypath] = NEW
+
+    @property
+    def leaves(self) -> Generator[tuple[tuple, Self], Any, None]:
+        return self.items_flat(digLeaf=False)
 
     def dfs(
         self,
@@ -1535,7 +1545,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     @property
     def height(self):
         """from leaves"""
-        return max((node.depth for node in self.values_flat()), default=0)
+        return max((node.depth for node in self.values_flat(digLeaf=False)), default=0)
 
     @property
     def childkeys(self):
