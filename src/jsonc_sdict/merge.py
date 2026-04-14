@@ -104,7 +104,7 @@ type IsType[T, *TS] = type[T] | tuple[*TS] | Callable[[Any], bool]
 """dict | (dict,) | lambda obj: isinstance(obj, dict)"""
 
 
-def argParser(add_help: bool = True, **kwargs) -> ArgumentParser:
+def _argParser(add_help: bool = True, **kwargs) -> ArgumentParser:
     mods_suggest = ("toml", "yaml", "json", "jsonc", "json5", "hjson")
     mods_ok = [m for m in mods_suggest if importlib.util.find_spec(m)]
     mods_lack = [m for m in mods_suggest if m not in mods_ok]
@@ -174,7 +174,7 @@ def argParser(add_help: bool = True, **kwargs) -> ArgumentParser:
     return ap
 
 
-_PARSER = argParser()
+_PARSER = _argParser()
 
 
 @overload

@@ -13,7 +13,7 @@ MergeModule = import_module("jsonc_sdict.merge")
 def argParser() -> ArgumentParser:
     ap = ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="command")
-    parent = MergeModule.argParser(add_help=False)
+    parent = MergeModule._argParser(add_help=False)
     sp = sub.add_parser(
         name="merge",
         parents=[parent],
