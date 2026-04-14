@@ -266,16 +266,16 @@ def test_sdict_merge_merges_into_self_and_forwards_kwargs():
         dictDict={"value_of_idKey": partial(get_item, keys="id")},
         unMergeable="new",
     )
+    should = {
+        "children": [
+            {"id": 1, "name": "2", "new": "", "old": None},
+            {"id": 2, "name": "3"},
+        ]
+    }
 
     assert result is data
-    assert data.equal(
-        {
-            "children": [
-                {"id": 1, "name": "2", "old": None, "new": ""},
-                {"id": 2, "name": "3"},
-            ]
-        }
-    )
+    assert sdict.are_equal(data.unref(), should)
+    assert data.equal(should)
 
 
 def test_sdict_ref_mode_reads_and_writes_nested_values():
