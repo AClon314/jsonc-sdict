@@ -264,7 +264,7 @@ def test_sdict_merge_merges_into_self_and_forwards_kwargs():
     result = data.merge(
         {"children": [{"id": 1, "name": "2", "new": ""}, {"id": 2, "name": "3"}]},
         dictDict={"value_of_idKey": partial(get_item, keys="id")},
-        sameKey_diffValue="new",
+        unMergeable="new",
     )
 
     assert result is data

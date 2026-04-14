@@ -1,9 +1,13 @@
-"""
-merge & solver
-"""
+#!/bin/env python
+# PYTHON_ARGCOMPLETE_OK
+"""merge json/dict & custom solver (from pip's jsonc_sdict)"""
 
+import importlib.util
+from argparse import ArgumentParser, Namespace
+from pprint import pformat
 from dataclasses import dataclass, asdict
-from functools import cached_property
+from functools import cached_property, partial
+from importlib import import_module
 from types import MappingProxyType
 from typing import (
     cast,
@@ -17,6 +21,7 @@ from typing import (
     TypeIs,
     Literal,
     Callable,
+    Sequence,
     Protocol,
     FrozenSet,
     TypedDict,
@@ -48,6 +53,8 @@ from jsonc_sdict.share import (
     getLogger,
     return_of,
     isFlatIterable,
+    text_from_shell,
+    args_of_type,
 )
 from jsonc_sdict.sdict import (
     dfs,
@@ -69,7 +76,7 @@ MergeOrderBase = Literal[
     "old-^",
     "new-^",
 ]
-MergeOrder = Literal[
+_Type_MergeOrder = Literal[
     "",
     "^",
     "old",
@@ -92,9 +99,82 @@ MergeOrder = Literal[
 # merge_orders = values_of_type(MergeOrder)
 # merge_order_bases = values_of_type(MergeOrderBase)
 
-type Type_MergeEnd = Literal["old", "new", "del"]
+type _Type_MergeEnd = Literal["old", "new", "del"]
 type IsType[T, *TS] = type[T] | tuple[*TS] | Callable[[Any], bool]
 """dict | (dict,) | lambda obj: isinstance(obj, dict)"""
+
+
+def argParser(add_help: bool = True, **kwargs) -> ArgumentParser:
+    mods_suggest = ("toml", "yaml", "json", "jsonc", "json5", "hjson")
+    mods_ok = [m for m in mods_suggest if importlib.util.find_spec(m)]
+    mods_lack = [m for m in mods_suggest if m not in mods_ok]
+    mods_help = (
+        f"eg: {' '.join(mods_ok)}.\nNot installed with pip: {' '.join(mods_lack)}"
+    )
+
+    ap = ArgumentParser(description=__doc__, add_help=add_help, **kwargs)
+    ap.add_argument(
+        "-i",
+        "--input",
+        nargs="+",
+        metavar="path_or_str",
+        help="path or str (路径或字符串)",
+    )
+    _mod = ap.add_argument(
+        "-f",
+        "--format",
+        metavar="hjson",
+        help=f"which format to parse string into dict_or_list with installed python package/modules.\n{mods_help}",
+    )
+    _mod_out = ap.add_argument(
+        "-fo",
+        "--format-out",
+        metavar="json",
+        help=f"output/dumps format.\n{mods_help}",
+    )
+    ap.add_argument(
+        "-t", "--indent", type=int, metavar="2", help="pretty print with preffix-indent"
+    )
+    ap.add_argument(
+        "-id",
+        "--idKey",
+        metavar="'id'",
+        help="pre-process for deepdiff to get better merged result, eg: [{id: 1, data: 114}, {id: 2, data: 514}] -> {1: {id: 1, data: 114}, 2: {id: 2, data: 514}}",
+    )
+    ap.add_argument(
+        "-nmld",
+        "--noMerge_list_dict",
+        action="store_true",
+        help="set this flag to prevent merging list[dict] when idKey is not set, eg: inputs=[{a:1}],[{b:2}]; return [{a:1,b:2}] if nmld else [{a:1},{b:2}]",
+    )
+    ap.add_argument(
+        "-m",
+        "--unMergeable",
+        choices=args_of_type(_Type_MergeEnd),
+        metavar="'old'",
+        help="by default use old's value if old&new have the same key.\nIf `--mergeable` is set, `-m` will *only* solve scale(int/str..., not dict/list...) conflicts.",
+    )
+    ap.add_argument(
+        "-M",
+        "--mergeable",
+        choices=args_of_type(_Type_MergeOrder),
+        metavar="'old,new-^'",
+        help="order for else mergeables(dict/list...) after unMergeable(), see python's help(jsonc_sdict.merge.merge)",
+    )
+    try:
+        import argcomplete
+        from argcomplete.completers import ChoicesCompleter
+
+        _mod.completer = ChoicesCompleter(mods_ok)  # type: ignore
+        _mod_out.completer = ChoicesCompleter(mods_ok)  # type: ignore
+
+        argcomplete.autocomplete(ap)
+    except ImportError as e:
+        Log.debug("skip argcomplete", exc_info=e)
+    return ap
+
+
+_PARSER = argParser()
 
 
 @overload
@@ -159,7 +239,7 @@ class merge[T1, T2](Iterable):
     创建Issue或PR来分享你的预设，帮助大家节省时间!
     """
 
-    _Type_AutoDict = dict[IsType, MergeOrder | Type_MergeEnd]
+    _Type_MergeableDict = dict[IsType, _Type_MergeOrder | _Type_MergeEnd]
     """`{dict: "del", (mergeable_type, sdict): "", lambda obj:isinstance(obj,Sequence) and not isinstance(obj,(str,bytes)): "old"}`"""
 
     root: DeepDiff
@@ -168,9 +248,10 @@ class merge[T1, T2](Iterable):
     """initial/original node data. use `old`/`new` instead of `node.t1`/`node.t2` if you want to get the current value"""
     env: "Env"
 
-    auto_old_new: _Type_AutoDict = {iterable: "old,new-^"}
-    auto_new_old: _Type_AutoDict = {iterable: "new,old-^"}
+    mergeable_prefer_old: _Type_MergeableDict = {iterable: "old,new-^"}
+    mergeable_prefer_new: _Type_MergeableDict = {iterable: "new,old-^"}
 
+    @staticmethod
     def _inject_args(func: Callable[PS, TV]) -> Callable[PS, TV]:
 
         def wrapper(
@@ -182,7 +263,7 @@ class merge[T1, T2](Iterable):
         ) -> TV:
             func_name = cast(str, func.__name__)
             is_solver = func_name.startswith("solver_")
-            # Log.debug(f"{func.__name__=}\t{root=}\t{node=}\t\t{args=}")
+            # Log.debug("func.__name__=%s\troot=%s\tnode=%s\t\targs=%s", func.__name__, root, node, args)
             if is_solver and not self._iter_started:
                 next(self)
             if root is None:
@@ -211,9 +292,9 @@ class merge[T1, T2](Iterable):
 
     @dataclass
     class Env:
-        auto: Final["merge._Type_AutoDict"]
-        skdv: Type_MergeEnd
-        """sameKey_diffValue"""
+        mergeable: Final["merge._Type_MergeableDict"]
+        unMergeable: _Type_MergeEnd
+        """strategy for unMergeable if same key and different value in map"""
         ddPaths: Final[set[tuple]]
         """dictDict() converted paths"""
         ddRestore: bool
@@ -324,20 +405,22 @@ class merge[T1, T2](Iterable):
         return self
 
     @_inject_args
-    def solver_sameKey_diffValue(
+    def solver_unMergeable(
         self,
         root: DeepDiff | None = None,
         node: DeepDiff | None = None,
         *,
-        skdv: Type_MergeEnd | None = None,
+        unMergeable: _Type_MergeEnd | None = None,
         diffType: Type_DiffReport | None = None,
         **env,
     ) -> None | Self:
         """
-        Resolve **unmergeable** conflicts before applying `auto` rules. \n
+        Resolve **unmergeable** conflict to mergeable conflict, when same key but different values of old&new.
+        Suggest: used when "values_changed" or "type_changes" happened, and used before applying `mergeable` rules. \n
         eg: old={"same": 1}, new={"same": 2} or new={"same": "1"} or new={"same": [...]}
         eg-both_container-but_type_mismatch: old={"same": [...]}, new={"same": {...}}
-        But these would **NOT** apply `sameKey_diffValue` rule, they directly apply `auto` rule:
+
+        But else, like these mergable would **NOT** apply `unMergeable` rule, they directly apply `mergeable` rule:
         eg-allList: old={"same": [...]}, new={"same": [...]}
         eg-allDict: old={"same": {...}}, new={"same": {...}}
         """
@@ -345,20 +428,18 @@ class merge[T1, T2](Iterable):
         assert node is not None
         assert diffType is not None
 
-        t1 = node.t1
-        if not (isinstance(t1, Mapping) and isinstance(t1, Mapping)):
-            return  # it's not hurt, no need to raise
         if diffType == "values_changed":
             Log.debug(
-                "deepdiff don't handle dict, so give up and next solver(usually `solver_auto`)"
+                "deepdiff don't handle dict, so give up and next solver(usually `solver_mergeable`)"
             )
             return
-        elif skdv == "del":
+        elif unMergeable == "del":
             self.del_item(root, node)
-        elif skdv == "old":
+        elif unMergeable == "old":
             pass
-        elif skdv == "new":
+        elif unMergeable == "new":
             self.set_item(root, node)
+        Log.debug("unMergeable=%s", unMergeable)
         return self
 
     @_inject_args
@@ -367,7 +448,7 @@ class merge[T1, T2](Iterable):
         root: DeepDiff | None = None,
         node: DeepDiff | None = None,
         *,
-        order: MergeOrder | None = None,
+        order: _Type_MergeOrder | None = None,
         **env,
     ) -> Self:
         """
@@ -384,15 +465,15 @@ class merge[T1, T2](Iterable):
         xor_map = isOldMap ^ isinstance(new, Mapping)
         if not all_iterable or xor_map:
             raise ValueError(
-                "old&new are not same type. Try to use `solver_sameKey_diffValue()` before, or override/try...catch"
+                "old&new are not same type. Try to use `solver_unMergeable()` before, or override/try...catch"
             )
-        Log.debug(f"🌒 intersect {type(old)=}\t{type(new)=}")
+        Log.debug("🌒 intersect type(old)=%s\ttype(new)=%s", type(old), type(new))
         orders = cast(list[MergeOrderBase], order.split(","))
         if isOldMap:
-            # only use key not value, so you must use `sameKey_diffValue()` to solve conflict before!
-            pos_old = orders.index("old") if "old" in orders else float("inf")
-            pos_new = orders.index("new") if "new" in orders else float("inf")
-            merged_map = {**old, **new} if pos_old < pos_new else {**new, **old}
+            # only use key not value, so you must use `unMergeable()` to solve conflict before!
+            # python's dict is different from js, {**A, **B} will keep A's parts if A&B have intersection keys
+            merged_map = {**old, **new} if "new" in orders else {**new, **old}
+            Log.debug("merged_map=%s\told=%s", merged_map, old)
             old = tuple(old)
             new = tuple(new)
 
@@ -427,20 +508,20 @@ class merge[T1, T2](Iterable):
         return self
 
     @_inject_args
-    def solver_auto(
+    def solver_mergeable(
         self,
         root: DeepDiff | None = None,
         node: DeepDiff | None = None,
         *,
-        auto: _Type_AutoDict | None = None,
+        mergeable: _Type_MergeableDict | None = None,
         diffType: Type_DiffReport | None = None,
         **env,
     ) -> Self:
-        """auto merge"""
+        """mergeable merge"""
         assert root is not None
         assert node is not None
-        if auto is None:
-            auto = self.env.auto
+        if mergeable is None:
+            mergeable = self.env.mergeable
         if diffType is None:
             diffType = self.env.diffType
         if diffType is None:
@@ -451,23 +532,22 @@ class merge[T1, T2](Iterable):
         if undef_t1 and undef_t2:
             raise ValueError("node.t1 and node.t2 both NotPresent")
         hit = False
-        if auto and not hit:
+        if mergeable and not hit:
             _node = node
             if diffType.endswith("_added"):
                 # d.keypath=['k'] <class 'deepdiff.helper.NotPresent'> d.t1=not present   <class 'str'> d.t2='v'
                 keypath = _node.keypath
                 _node = _node.up
                 _node.keypath = keypath[:-1]
-            for types, order in auto.items():
+            for types, order in mergeable.items():
                 hit_t1 = isType(_node.t1, types)
                 hit_t2 = isType(_node.t2, types)
                 if hit := (hit_t1 or hit_t2):
-                    # 命中rule
-                    Log.debug("⚽ hit auto types=%s", types)
+                    Log.debug("⚽ hit mergeable types=%s", types)
                     break
         if not hit:
             raise ValueError(
-                f"Not hit any auto rule, try...catch manually, or enhance your {auto=} for this data={node}"
+                f"Not hit any mergeable rule, try...catch manually, or enhance your {mergeable=} for this data={node}"
             )
         if order == "del":
             self.del_item(root, node)
@@ -481,7 +561,7 @@ class merge[T1, T2](Iterable):
         elif "^" in order:  # type: ignore
             self.solver_intersect(root, node, order=order)
         else:
-            raise ValueError(f"invalid {{{types}:{order}}} from {auto=}")
+            raise ValueError(f"invalid {{{types}:{order}}} from {mergeable=}")
         return self
 
     def solve_each(self) -> Self:
@@ -496,22 +576,26 @@ class merge[T1, T2](Iterable):
         if not self._iter_started:
             next(self)
         if self.env.diffType == "values_changed":
-            self.solver_sameKey_diffValue()
+            self.solver_unMergeable()
         elif self.env.diffType == "type_changes":
-            raise TypeError("""We raise this error to remind you that you need to handle the "type_changes" case manually:
+            self.solver_unMergeable()
+            Log.warning(
+                """you can handle "type_changes" case manually:
 1. If you want your class to be merged correctly, it must be recognized as one of the following types: Mapping (dict), Sequence (list), or Set.
    For details, see `merge.deepdiff_args["ignore_type_in_groups"] = ((MutableMapping, MyObjType), ...)` and refer to the DeepDiff documentation (recommended to consult context7).
 2. If you do NOT want merging and prefer to overwrite directly with either the new or old value, you can write it like this:
 ```python
 for gen in merge(...):
     if gen.env.diffType == "type_changes":
-        gen.solver_sameKey_diffValue(skdv="new") # directly use new value
+        gen.solver_unMergeable(unMergeable="new") # directly use new value
     else:
         gen.solvers_XXX()
-```""")
+```"""
+            )
+            return self
         elif self.env.diffType == "repetition_change":
             raise _TODO
-        self.solver_auto()
+        self.solver_mergeable()
         return self
 
     def solve_all(self) -> Self:
@@ -588,8 +672,8 @@ for gen in merge(...):
         old_new: tuple[T1, T2] | DeepDiff[T1, T2]
         dictDict: "merge._KwargsDictDict | None"
         deepdiff_args: Mapping[str, Any]
-        sameKey_diffValue: Type_MergeEnd
-        auto: "merge._Type_AutoDict | None"
+        unMergeable: _Type_MergeEnd
+        mergeable: "merge._Type_MergeableDict | None"
         env: dict
 
     def __init__(
@@ -597,12 +681,12 @@ for gen in merge(...):
         old_new: tuple[T1, T2] | DeepDiff[T1, T2],
         dictDict: _KwargsDictDict | None = None,
         deepdiff_args: Mapping[str, Any] = deepdiff_args,
-        sameKey_diffValue: Type_MergeEnd = "old",
-        auto: _Type_AutoDict | None = auto_old_new,
+        unMergeable: _Type_MergeEnd = "old",
+        mergeable: _Type_MergeableDict | None = None,
         env={},
     ) -> None:
         """
-        if new is dict or Map, will auto convert into DeepDiff internally.
+        if new is dict or Map, will mergeable convert into DeepDiff internally.
         *inspired by [deepmerge](https://github.com/toumorokoshi/deepmerge) & [deepdiff](https://github.com/seperman/deepdiff) with [this issue](https://github.com/seperman/deepdiff/issues/552)*
 
         Usage:
@@ -626,9 +710,9 @@ for gen in merge(...):
                 because list[dict] is hard to merge correctly(while dict or list[int|bool|str...basic_type_not_container] is easy) \n
                 disabled when `old_new` is already DeepDiff, because dictDict() should run before DeepDiff()
             deepdiff_args: the kwargs to init DeepDiff(\\*\\*deepdiff_args), disabled when `old_new` is already DeepDiff
-            sameKey_diffValue: default `"old"`, resolve **un**mergeable conflicts, see `solver_sameKey_diffValue()`
-            auto: auto resolve **mergeable** conflict
-                - if not match any rule at last, `gen.solver_auto()` will yield.
+            unMergeable: default `"old"`, resolve **un**mergeable conflict into mergeable conflict, see `solver_unMergeable()`
+            mergeable: by default will **follow** `unMergeable` if `mergable` is **NOT** set. Resolve **mergeable** conflict
+                - if not match any rule at last, `gen.solver_mergeable()` will yield.
                     If do nothing or call `gen.send(None)`, will preserve **old**'s key-value pair.
                 - `""` means {"preserve key & value container, but no values": []}
                 - "del" means {}, del key-value pair.
@@ -638,9 +722,9 @@ for gen in merge(...):
             env: for solver funcs
 
         ## Devs says
-        ### Difference between `auto` & `solver`
+        ### Difference between `mergeable` & `solver`
             `jsonc_sdict` plan to have other program lang's version, so
-            `auto` is cross-platform rule, but `solver` is specify on different dependency(eg: python is `DeepDiff`)
+            `mergeable` is cross-platform rule, but `solver` is specify on different dependency(eg: python is `DeepDiff`)
         """
         ddRestore = True
         ddPaths: set[tuple] = set()
@@ -659,14 +743,25 @@ for gen in merge(...):
                 old, new, ddPaths = self._dictDict(old, new, **dictDict)
             self.root = DeepDiff(old, new, **deepdiff_args)
         self.node = self.root
+
+        if mergeable is None:
+            if unMergeable == "old":
+                mergeable = merge.mergeable_prefer_old
+            elif unMergeable == "new":
+                mergeable = merge.mergeable_prefer_new
+            elif unMergeable == "del":
+                mergeable = {iterable: "del"}
+            else:
+                mergeable = {}  # will skip mergeable()
+
         self.env = self.Env(
-            auto=auto,
-            skdv=sameKey_diffValue,
+            mergeable=mergeable,
+            unMergeable=unMergeable,
             ddPaths=ddPaths,
             ddRestore=ddRestore,
             **env,
         )
-        Log.debug(f"{self.root=}\t{self.env=}")
+        Log.debug("self.root=%s\tself.env=%s", self.root, self.env)
         self._iter = self._new_iter()
         self._iter_started = False
 
@@ -684,11 +779,18 @@ for gen in merge(...):
         for dt in diffTypes:
             self.env.diffType = dt
             diffs: Iterable[DeepDiff] = self.root[dt]
-            Log.debug(f"{dt=}\t{self.env.diffType=}")
+            Log.debug("dt=%s\tself.env.diffType=%s", dt, self.env.diffType)
             for d in diffs:
                 self.node = d
                 self._set_keypath(d)
-                Log.debug(f"{d.keypath=}\t{type(d.t1)} {d.t1=}\t{type(d.t2)} {d.t2=}")
+                Log.debug(
+                    "d.keypath=%s\t%s d.t1=%s\t%s d.t2=%s",
+                    d.keypath,
+                    type(d.t1),
+                    d.t1,
+                    type(d.t2),
+                    d.t2,
+                )
                 yield self
         if self.env.ddRestore and self.env.ddPaths:
             self.root.t1 = un_dictDict(
@@ -701,3 +803,73 @@ for gen in merge(...):
             node = self.node
         node.keypath = tuple(node.path(output_format="list"))
         return node.keypath  # type: ignore
+
+
+def _main_(
+    parser: ArgumentParser = _PARSER,
+    args: Sequence[str] | None = None,
+    ns: Namespace | None = None,
+):
+    # TODO: merge comments?
+    if ns is None:  # parsed_args is None
+        ns, args = parser.parse_known_args(args)
+    len_input = len(ns.input)
+    assert len_input >= 2, f"{len_input=} should >= 2"
+
+    mods = ("hjson", "json5", "json") if ns.format is None else (ns.format,)
+    mod = None
+    _errors: dict[str, Exception] = {}
+    for name in mods:
+        try:
+            mod = import_module(name)
+            break
+        except Exception as e:
+            _errors.update({name: e})
+    if mod is None:
+        raise ExceptionGroup(
+            f"failed to import {','.join(_errors.keys())}",
+            list(_errors.values()),
+        )
+
+    mod_out = ns.format_out
+    mod_out = import_module(mod_out) if mod_out else mod
+
+    root_str = text_from_shell(ns.input[0])
+    root = mod.loads(root_str)
+    for idx, _input in enumerate(ns.input[1:], start=1):
+        Log.debug("idx=%s\ttotal=%s\t_input=%s", idx, len_input, _input)
+        new_str = text_from_shell(_input)
+        new = mod.loads(new_str)
+        idKey = ns.idKey
+        nmld = ns.noMerge_list_dict
+        unMergeable: _Type_MergeEnd = ns.unMergeable
+        mergeable: _Type_MergeOrder | None = ns.mergeable
+
+        dictDict: merge._KwargsDictDict | None
+        if idKey is not None:
+            dictDict = {"value_of_idKey": partial(get_item_attr, keys=idKey)}
+        elif nmld:
+            dictDict = {"value_of_idKey": id}
+        else:
+            dictDict = None
+
+        if mergeable is not None:
+            kw = dict(mergeable={iterable: mergeable})
+        else:
+            kw = {}
+        merge(
+            (root, new),
+            dictDict=dictDict,
+            unMergeable=unMergeable,
+            **kw,
+        )()
+    try:
+        out = mod_out.dumps(root, indent=ns.indent, ensure_ascii=False)
+    except Exception as e:
+        Log.error("fallback to pprint()", exc_info=e)
+        out = pformat(root, indent=ns.indent)
+    print(out)
+
+
+if __name__ == "__main__":
+    _main_()

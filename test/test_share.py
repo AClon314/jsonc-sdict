@@ -2,7 +2,7 @@ from typing import Literal
 
 import pytest
 
-from jsonc_sdict.share import in_range, len_slice, return_of, args_of_type, yields_of
+from jsonc_sdict.share import in_range, len_slice, return_of, args_of_type
 
 
 def test_return_helpers_consume_generators():
@@ -11,7 +11,6 @@ def test_return_helpers_consume_generators():
         second = yield (first or "b")
         return second or "done"
 
-    assert yields_of(gen()) == (["a", "b"], "done")
     assert return_of(gen()) == "done"
 
 
@@ -24,7 +23,7 @@ def test_return_helpers_do_not_swallow_inner_type_error():
         return_of(gen())
 
     with pytest.raises(TypeError, match="inner boom"):
-        yields_of(gen())
+        tuple(gen())
 
 
 def test_in_range():

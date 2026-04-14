@@ -1,8 +1,12 @@
 """shared static public lib"""
 
 import os
+import ast
 import inspect
 import logging
+from argparse import ArgumentParser
+from dataclasses import dataclass
+from importlib import import_module
 from itertools import islice
 from collections.abc import (
     Callable,
@@ -13,6 +17,7 @@ from collections.abc import (
     Iterator,
     Sized,
 )
+from pathlib import Path
 from types import MappingProxyType
 from typing import (
     get_args,
@@ -44,6 +49,9 @@ logging.basicConfig(format="%(levelname)s %(asctime)s %(name)s:%(lineno)d\t%(mes
 if IS_DEBUG:
     LOG = "DEBUG"
 
+
+_PKG_DIR = Path(__file__).resolve().parent
+_PKG_ = __package__ or _PKG_DIR.stem
 _TODO = NotImplementedError(
     "rare edge case, click https://github.com/AClon314/jsonc-sdict/issues to report"
 )
@@ -53,6 +61,9 @@ def getLogger(name: str | None = None) -> logging.Logger:
     Log = logging.getLogger(__name__)
     Log.setLevel(LOG)
     return Log
+
+
+Log = getLogger(__name__)
 
 
 def iterable[V](obj: Iterable[V] | Any) -> TypeIs[Iterable[V]]:
@@ -152,37 +163,6 @@ def return_from[Y, S, R = None](
     else:
         ret = gen
     return ret
-
-
-def yields_of[Y, S, R = None](
-    gen: Generator[Y, S, R] | Iterator[Y], send: S = None
-) -> tuple[list[Y], R]:
-    """
-    consume generator and get its yields.
-
-    Args:
-        send: to gen
-
-    Returns:
-        return, yields
-
-    Raises:
-        GeneratorExit
-        MemoryError
-    """
-    isGen = isinstance(gen, Generator)
-    yields: list[Y] = []
-    try:
-        if not isGen or inspect.getgeneratorstate(gen) == inspect.GEN_CREATED:
-            v = next(gen)
-        else:
-            v = gen.send(send)
-        yields.append(v)
-        while True:
-            v = gen.send(send) if isGen else next(gen)
-            yields.append(v)
-    except StopIteration as e:
-        return yields, e.value
 
 
 def in_range(i: int, Slice: slice, total: int | None = None) -> bool:
@@ -344,6 +324,11 @@ def are_equal(
     return a == b
 
 
+def text_from_shell(path_or_str: str) -> str:
+    p = Path(path_or_str)
+    return p.read_text(encoding="utf-8") if p.exists() else path_or_str
+
+
 def typeof[T](alias: T) -> T:
     while type(alias) is TypeAliasType:
         alias = alias.__value__
@@ -363,6 +348,58 @@ def args_of_type[T](typ: T) -> tuple[T, ...]:
     return tuple(dict.fromkeys(unpack_type(typ)))
 
 
+@dataclass
+class ModVars:
+    Class: list[str]
+    Func: list[str]
+    Else: list[str]
+
+
+def vars_of(path: Path, pkg: str = _PKG_) -> ModVars:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    Class = [node.name for node in tree.body if isinstance(node, ast.ClassDef)]
+    Func = [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    ]
+    parts = path.parent.parts + (path.stem,)
+    mod_name = ".".join(parts[parts.index(pkg) :])
+    mod = import_module(mod_name, pkg)
+    Else = list(
+        {v for v in vars(mod).keys() if not v.startswith("_")} - set(Class) - set(Func)
+    )
+    return ModVars(Class=Class, Func=Func, Else=Else)
+
+
+def mods_of(path: Path = _PKG_DIR) -> dict[str, ModVars]:
+    return {p.stem: vars_of(p) for p in sorted(path.glob("*.py"))}
+
+
+def Help(Else=False) -> str:
+    """list all useable funcs"""
+    out = ""
+    for mod, var in mods_of().items():
+        from_import = f"from {_PKG_}.{mod} import \t"
+        if var.Class:
+            out += "\n# 📚 class\n" + from_import + ", ".join(var.Class)
+        if var.Func:
+            out += "\n# func\n" + from_import + ", ".join(var.Func)
+        if Else and var.Else:
+            out += "\n# else\n" + from_import + ", ".join(var.Else)
+        out += "\n"
+    return out.strip()
+
+
+def try_autocomplete(parser: ArgumentParser):
+    try:
+        import argcomplete
+
+        argcomplete.autocomplete(parser)
+    except ImportError as e:
+        Log.warning("skip argcomplete", exc_info=e)
+
+
 PS = ParamSpec("PS")
 TV = TypeVar("TV")
 
@@ -376,15 +413,3 @@ def copy_args(
         return func
 
     return return_func
-
-
-def check_hashWeak(obj: Any):
-    try:
-        hash(obj)
-        # 检查__weakref__（存在弱引用支持）
-        _ = obj.__weakref__
-    except (TypeError, AttributeError) as e:
-        raise TypeError(
-            f"Inserted object {obj!r} must support __hash__ and __weakref__ "
-            "(e.g. custom class instances, not dict/list/basic types like int/str)"
-        ) from e

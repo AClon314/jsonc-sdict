@@ -1,33 +1,11 @@
 """Usage:
 ```python
-
+from jsonc_sdict import jsoncDict, sdict, merge, WeakList, NONE
 ```
 """
 
+from .share import NONE, _PKG_
 from .jsonc import jsoncDict, hjsonDict, CompactJSONEncoder
-from .sdict import (
-    sdict,
-    unref,
-    dfs,
-    dictDict,
-    un_dictDict,
-    get_children,
-    get_item_attr,
-    get_item,
-    get_attr,
-    set_item,
-    set_item_attr,
-    del_item,
-    del_item_attr,
-)
-from .merge import merge
-from .weakList import WeakList, OrderedWeakSet
-from .share import (
-    iterable,
-    return_of,
-    yields_of,
-    in_range,
-    copy_args,
-    len_slice,
-    NONE,
-)
+from .sdict import sdict as Sdict, dfs
+from .merge import merge as Merge
+from .weakList import WeakList

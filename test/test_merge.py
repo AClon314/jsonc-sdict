@@ -55,7 +55,8 @@ def test_merge_dictDict():
         merge(
             (t1, t2),
             dictDict={"value_of_idKey": partial(get_item, keys="id")},
-            sameKey_diffValue="new",
+            unMergeable="new",
+            mergeable=merge.mergeable_prefer_new,
         )
         .solve_all()
         .merged

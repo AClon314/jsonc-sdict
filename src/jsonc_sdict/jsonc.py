@@ -279,17 +279,15 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         raw = raw.replace("\r", "")
         # n = len(raw)
         # comment_index = 0
-        
+
         # NOTE:has_comment为false时，需要额外记录forceDataKeys
         # TODO: 搜索token
         keypath = ()
-        for kp in list(self.keys_flat()):
-            if isinstance(obj.v, Mapping):
-                for key in list(obj.keys()):
-                    comment = self.split_key(key)
-                    if not comment:
-                        continue
-                    comment
+        for keypath in tuple(self.keys_flat()):
+            for key in keypath:
+                comment = self.split_key(key)
+                if not comment:
+                    continue
             else:  # iterable
                 for v in obj.v:
                     pass

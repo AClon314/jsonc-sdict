@@ -1,7 +1,4 @@
-"""
-wrapper of Weak*Dictionary
-- Life cycle: long-lived
-"""
+"""wrapper of Weak(Key/Value)Dictionary"""
 
 import sys
 from weakref import WeakKeyDictionary, WeakValueDictionary

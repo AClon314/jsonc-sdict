@@ -13,13 +13,13 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: 3.15",
 ]
-dependencies = ["deepdiff ~=8.0"]
+dependencies = ["deepdiff ~=8.0", "argcomplete ~=3.0"]
 description = "keep comment(round-trip) when read & write jsonc/hjson,  sdict with extra context(parent/keypath), weakList & OrderedWeakSet"
 keywords = ["config", "json", "jsonc", "hjson", "round-trip", "comment", "deepdiff", "deepmerge", "benedict", "weakList", "OrderedWeakSet"]
 name = "jsonc_sdict"
 readme = "README.md"
 requires-python = ">=3.13"
-version = "0.2.20260408"
+version = "0.2.20260412"
 
 [[project.authors]]
 email = "nolca@qq.com"
@@ -34,3 +34,6 @@ dev = ["pytest", "hjson"]
 [project.urls]
 Download = "http://github.com/AClon314/jsonc-sdict/releases"
 Homepage = "http://github.com/AClon314/jsonc-sdict"
+
+[project.scripts]
+deep-merge = "jsonc_sdict.merge:_main_"

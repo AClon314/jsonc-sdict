@@ -1,6 +1,4 @@
-"""
-super dict, signal dict...
-"""
+"""super dict, signal dict."""
 
 import re
 from weakref import ref, WeakKeyDictionary, WeakValueDictionary
@@ -698,7 +696,7 @@ def dictDict[CLS = "sdict"](
         raise ValueError("gen_dfs is empty")
     root = cast(sdict, nodes[0])
     for self in nodes:
-        Log.debug(f"{self=}")
+        Log.debug("self=%s", self)
         if not isinstance(self, sdict):
             raise TypeError("only support dictDict(gen= dfs(cls=sdict) )")
         if isinstance(self.v, Mapping) or not iterable(self.v):
@@ -717,7 +715,7 @@ def dictDict[CLS = "sdict"](
             exc_info=e,
         )
     keypaths = [node.keypath for node in converted]
-    Log.debug(f"final {root=}\n{keypaths=}")
+    Log.debug("final root=%s\nkeypaths=%s", root, keypaths)
     return ddReturn(v=root, keypaths=keypaths)
 
 
@@ -838,7 +836,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """
         if isinstance(data, sdict):
             Log.warning(
-                "{} is sdict, use deepcopy(mySdict) or copy(mySdict) to keep internal states",
+                "%s is sdict, use deepcopy(mySdict) or copy(mySdict) to keep internal states",
                 type(data),
             )
 
