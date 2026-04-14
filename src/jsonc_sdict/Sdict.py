@@ -49,7 +49,7 @@ from jsonc_sdict.share import (
 from jsonc_sdict.weakList import WeakList
 
 if TYPE_CHECKING:
-    from jsonc_sdict.merge import merge as _merge
+    from jsonc_sdict.Merge import merge as _merge
 
 type Key[K = Any] = K | int
 """dict:Key | list:int-index"""
@@ -1234,7 +1234,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """
         if "old_new" in kwargs:
             raise ValueError("sdict.merge() got unexpected keyword argument 'old_new'")
-        from jsonc_sdict.merge import merge
+        from jsonc_sdict.Merge import merge
 
         merge((self, obj), **kwargs).solve_all()
         return self

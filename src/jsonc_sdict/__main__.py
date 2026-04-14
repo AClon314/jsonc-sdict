@@ -7,10 +7,10 @@ from argparse import ArgumentParser
 from importlib import import_module
 from typing import Any, Sequence
 
-MergeModule = import_module("jsonc_sdict.merge")
+MergeModule = import_module("jsonc_sdict.Merge")
 
 
-def argParser() -> ArgumentParser:
+def _argParser() -> ArgumentParser:
     ap = ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="command")
     parent = MergeModule._argParser(add_help=False)
@@ -25,7 +25,7 @@ def argParser() -> ArgumentParser:
 
 def main(args: Sequence[str] | None = None) -> Any:
     args = list(sys.argv[1:] if args is None else args)
-    parser = argParser()
+    parser = _argParser()
     ns = parser.parse_args(args)
     entrypoint = getattr(ns, "_main", None)
 

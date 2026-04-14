@@ -56,7 +56,7 @@ from jsonc_sdict.share import (
     text_from_shell,
     args_of_type,
 )
-from jsonc_sdict.sdict import (
+from jsonc_sdict.Sdict import (
     dfs,
     dictDict,
     ddReturn,

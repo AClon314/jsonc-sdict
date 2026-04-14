@@ -2,7 +2,7 @@ from functools import partial
 from types import MappingProxyType
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
-from jsonc_sdict.sdict import (
+from jsonc_sdict.Sdict import (
     all_path,
     dictDict,
     del_item,

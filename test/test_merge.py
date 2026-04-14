@@ -2,8 +2,8 @@ from functools import partial
 
 import pytest
 
-from jsonc_sdict.merge import DeepDiffProtocol, merge
-from jsonc_sdict.sdict import get_item
+from jsonc_sdict.Merge import DeepDiffProtocol, merge
+from jsonc_sdict.Sdict import get_item
 from jsonc_sdict.share import are_equal
 
 

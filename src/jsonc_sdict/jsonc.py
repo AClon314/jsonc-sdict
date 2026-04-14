@@ -23,7 +23,7 @@ from typing import Any, Unpack, Literal, cast, overload, Self
 from warnings import deprecated
 
 from jsonc_sdict.share import UNSET, getLogger, iterable, args_of_type, copy_args
-from jsonc_sdict.sdict import sdict, set_item, get_item, unref
+from jsonc_sdict.Sdict import sdict, set_item, get_item, unref
 
 Log = getLogger(__name__)
 _Type_BeforeSep = Literal["", "\n", ",", "k", ":", "v"]

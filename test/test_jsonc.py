@@ -4,7 +4,7 @@ import hjson
 import pytest
 
 from jsonc_sdict.jsonc import hjsonDict, jsoncDict
-from jsonc_sdict.sdict import sdict
+from jsonc_sdict.Sdict import sdict
 
 
 @pytest.fixture(autouse=True)
@@ -97,7 +97,7 @@ def test_insert_has_comment_false_records_forced_data_keys():
     reason="jsonc.loads(raw_text) parser rewrite is still unfinished",
 )
 def test_jsonc_loads_from_text_is_not_ready():
-    make_jsonc("// head\n{\n  \"a\": 1\n}\n")
+    make_jsonc('// head\n{\n  "a": 1\n}\n')
 
 
 @pytest.mark.xfail(
