@@ -19,7 +19,7 @@ keywords = ["config", "json", "jsonc", "hjson", "round-trip", "comment", "deepdi
 name = "jsonc_sdict"
 readme = "README.md"
 requires-python = ">=3.13"
-version = "0.2.20260412"
+version = "0.2.20260415"
 
 [[project.authors]]
 email = "nolca@qq.com"
@@ -36,4 +36,4 @@ Download = "http://github.com/AClon314/jsonc-sdict/releases"
 Homepage = "http://github.com/AClon314/jsonc-sdict"
 
 [project.scripts]
-deep-merge = "jsonc_sdict.merge:_main_"
+deep-merge = "jsonc_sdict.Merge:_main_"

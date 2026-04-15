@@ -23,7 +23,7 @@ def _argParser() -> ArgumentParser:
     return ap
 
 
-def main(args: Sequence[str] | None = None) -> Any:
+def _main_(args: Sequence[str] | None = None) -> Any:
     args = list(sys.argv[1:] if args is None else args)
     parser = _argParser()
     ns = parser.parse_args(args)
@@ -37,4 +37,4 @@ def main(args: Sequence[str] | None = None) -> Any:
 
 
 if __name__ == "__main__":
-    main()
+    _main_()
