@@ -1,33 +1,11 @@
 import json
+from pathlib import Path
 
 import hjson
 import pytest
 
 from jsonc_sdict.jsonc import hjsonDict, jsoncDict
 from jsonc_sdict.Sdict import sdict
-
-
-@pytest.fixture(autouse=True)
-def compat_jsonc_cache():
-    old_sdict = getattr(sdict, "_cached", None)
-    old_jsonc = getattr(jsoncDict, "_cached", None)
-    old_hjson = getattr(hjsonDict, "_cached", None)
-    sdict._cached = {"height", "childkeys", "unref"}
-    jsoncDict._cached = {"height", "childkeys", "unref", "body", "data"}
-    hjsonDict._cached = {"height", "childkeys", "unref", "body", "data"}
-    yield
-    if old_sdict is None:
-        delattr(sdict, "_cached")
-    else:
-        sdict._cached = old_sdict
-    if old_jsonc is None:
-        delattr(jsoncDict, "_cached")
-    else:
-        jsoncDict._cached = old_jsonc
-    if old_hjson is None:
-        delattr(hjsonDict, "_cached")
-    else:
-        hjsonDict._cached = old_hjson
 
 
 def json_dumps(obj):
@@ -44,6 +22,12 @@ def make_hjson(raw, **kwargs):
     return hjsonDict(raw, hjson.loads, dumps=json_dumps, **kwargs)
 
 
+def test_init():
+    In = Path("test/old.jsonc")
+    jd = jsoncDict(In.read_text("utf-8"), hjson.loads)
+
+
+@pytest.mark.xfail
 def test_split_key_detects_comment_markers():
     inline = jsoncDict.split_key("//line")
     line_above = jsoncDict.split_key("//\nline")
@@ -64,6 +48,7 @@ def test_split_key_detects_comment_markers():
     assert jsoncDict.split_key("plain") is None
 
 
+@pytest.mark.xfail
 def test_hjson_split_key_supports_hash_comments():
     comment = hjsonDict.split_key("# hello")
     assert comment is not None

@@ -2,6 +2,8 @@ from functools import partial
 from types import MappingProxyType
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
+import pytest
+
 from jsonc_sdict.Sdict import (
     all_path,
     dictDict,
@@ -274,7 +276,7 @@ def test_sdict_merge_merges_into_self_and_forwards_kwargs():
     }
 
     assert result is data
-    assert sdict.are_equal(data.unref(), should)
+    assert sdict._are_equal(data.unref(), should)
     assert data.equal(should)
 
 
@@ -344,8 +346,8 @@ def test_sdict_unref_property_returns_plain_nested_data():
 
 
 def test_sdict_is_nestKeys_excludes_strings():
-    assert sdict.is_nestKeys(("a", "b")) is True
-    assert sdict.is_nestKeys("ab") is False
+    assert sdict._is_keypath(("a", "b")) is True
+    assert sdict._is_keypath("ab") is False
 
 
 def test_sdict_getitem_method_returns_default_for_missing_path():
@@ -447,8 +449,8 @@ def test_sdict_clear_empties_mapping():
 def test_sdict_are_equal_respects_key_order():
     left = sdict({"b": 2, "a": 1}, deep=False)
 
-    assert sdict.are_equal(left, {"b": 2, "a": 1}) is True
-    assert sdict.are_equal(left, {"a": 1, "b": 2}) is False
+    assert sdict._are_equal(left, {"b": 2, "a": 1}) is True
+    assert sdict._are_equal(left, {"a": 1, "b": 2}) is False
 
 
 def test_sdict_equal_respects_key_order():
@@ -493,10 +495,17 @@ def test_sdict_rename_key_without_old_renames_current_node_in_parent():
     assert data["renamed", "value"] == 1
 
 
-def test_sdict_keys_flat_digLeaf():
-    data = sdict({"a": {"b": 1}}, deep=False)
+@pytest.mark.parametrize(
+    "data, should",
+    [
+        ({"a": {"b": 1}}, [("a", "b")]),
+        ({"a": 1, "b": 2}, [("a",), ("b",)]),
+    ],
+)
+def test_sdict_keys_flat_digLeaf(data, should):
+    data = sdict(data, deep=False)
 
-    assert list(data.keys_flat(readonly=True, digLeaf=True)) == [("a", "b")]
+    assert list(data.keys_flat(readonly=True, digLeaf=True)) == should
 
 
 def test_sdict_values_flat_notDigLeaf():

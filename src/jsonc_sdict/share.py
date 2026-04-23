@@ -1,6 +1,8 @@
 """shared static public lib"""
 
+import re
 import os
+import sys
 import ast
 import inspect
 import logging
@@ -20,6 +22,8 @@ from collections.abc import (
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
+    Protocol,
+    cast,
     get_args,
     overload,
     Any,
@@ -40,6 +44,7 @@ type UNSET = "UNSET"  # type: ignore
 type NONE = "NONE"  # type: ignore
 """gen.send(NONE) to give None as new value"""
 Scalar = None | bool | int | float | str | bytes | bytearray
+"""yaml support byte by `!!binary |\\n`"""
 ImmutableContainers = tuple | MappingProxyType | FrozenSet
 PS = ParamSpec("PS")
 
@@ -170,6 +175,12 @@ def in_range(i: int, Slice: slice, total: int | None = None) -> bool:
     Args:
         total: \\>=0. Set this as `i`'s max/len, if you want [:-1] negative index support.
     """
+    if (
+        Slice.start is None
+        and Slice.stop is None
+        and (Slice.step is None or Slice.step == 1)
+    ):
+        return True
     assert isinstance(i, int), f"{type(i)=},but should be int"
     assert total is None or total >= 0, f"{total=} should >= 0"
     step = Slice.step if Slice.step is not None else 1
@@ -413,3 +424,39 @@ def copy_args(
         return func
 
     return return_func
+
+
+class RegexPattern[S: (str, bytes)](Protocol):
+    """
+    `re.Pattern` and `regex.Pattern` shared property subset.
+
+    Keep this protocol on the common denominator:
+    - keep stdlib-style positional parameters
+    - exclude `regex`-only features like `named_lists`, `splititer`, `scanner`
+    - exclude callback replacements to avoid coupling to a concrete `Match` type
+    """
+
+    def findall(self, *args, **kw) -> list[S]: ...
+    def finditer(self, *args, **kw) -> Iterator: ...
+    @property
+    def flags(self) -> int: ...
+    def fullmatch(self, *args, **kw) -> re.Match | None: ...
+    @property
+    def groupindex(self) -> Mapping[str, int]: ...
+    @property
+    def groups(self) -> int: ...
+    def match(self, *args, **kw) -> re.Match | None: ...
+    @property
+    def pattern(self) -> S: ...
+    def search(self, *args, **kw) -> re.Match | None: ...
+    def split(self, *args, **kw) -> list[S]: ...
+    def sub(self, *args, **kw) -> S: ...
+    def subn(self, *args, **kw) -> tuple[S, int]: ...
+
+
+def search(string: str, pattern: str | RegexPattern, start=0, end=sys.maxsize):
+    if isinstance(pattern, str):
+        index = string.find(pattern, start, end)
+        return None if index == -1 else index
+    pattern = cast(re.Pattern, pattern)
+    return pattern.search(string, start, end)
