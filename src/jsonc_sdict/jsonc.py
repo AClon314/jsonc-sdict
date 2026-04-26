@@ -1,17 +1,19 @@
 #!/bin/env python3
 """
 ```
+```
 """
 
 import re
 import json
 from uuid import uuid4
+from collections import OrderedDict
+from weakref import WeakKeyDictionary
 from collections.abc import (
     Callable,
     Mapping,
     Sequence,
     Iterable,
-    MutableSequence,
 )
 from typing import Any, TypeIs, Unpack, Literal, cast, Self
 
@@ -26,13 +28,12 @@ from jsonc_sdict.share import (
     args_of_type,
     _TODO,
 )
-from jsonc_sdict.Sdict import sdict, set_item, get_item, unref
+from jsonc_sdict.Sdict import sdict, dfs, set_item, get_item, unref
 
 Log = getLogger(__name__)
 _Type_BeforeSep = Literal["", "\n", ",", "k", ":", "v"]
 """k : v , \n"""
 before_seps = args_of_type(_Type_BeforeSep)
-_Type_DataOrComment = Literal["data", "comment"]
 
 
 def _esc_for_regex(unEsc: str) -> str:
@@ -48,6 +49,9 @@ class Between[A, B](tuple[A, B]):
 
     def __new__(cls, a: A, b: B) -> Self:
         return super().__new__(cls, (a, b))
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}{self[0], self[1]}"
 
 
 def is_comment[A, B](key: Between[A, B] | Any) -> TypeIs[Between[A, B]]:
@@ -72,7 +76,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     ```
     """
 
-    __dumps_raw = json_dumps
+    __dumps = json_dumps
     slash_dash = True
     """default True. if key_name starts_with `/-`, like `/-mynode` will comment the whole tree node, see [kdl](https://kdl.dev/) config style"""
     auto_indent = True
@@ -88,7 +92,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         self,
         data: str | Mapping[K, V],
         loads: Callable[[str], Any] | None = None,
-        dumps: Callable[[Any], str] = __dumps_raw,
+        dumps: Callable[[Any], str] = __dumps,
         slash_dash: bool = slash_dash,
         auto_indent: bool = auto_indent,
         **kwargs: Unpack[sdict.Kwargs],
@@ -103,15 +107,15 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
             auto_indent: default True. Auto-indent for multi-line comment. if False, then you need manually handle indent
             **kwargs: see `sdict()`
         """
-        self.__loads_raw = loads
-        self.__dumps_raw = dumps
+        self.__loads = loads
+        self.__dumps = dumps
         self.slash_dash = slash_dash
         self.auto_indent = auto_indent
 
         if isinstance(data, str):
-            if self.__loads_raw is None:
+            if self.__loads is None:
                 raise ValueError("missing arg `loads` when `raw` is str")
-            obj = self.__loads_raw(data)
+            obj = self.__loads(data)
         else:
             obj = data
             data = ""
@@ -119,8 +123,8 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         # NOTE: 其实raw(str)并不重要，我们只关心 data(dict)
         # `sdict.__init__` may call `self.__setitem__`, so setup attrs before this call.
         super().__init__(obj, **kwargs)
-        self.comments: sdict[tuple[Any, Any], str] = sdict()
-        """comments only, no data. eg: `{(dataKeyA, dataKeyB): "  // comment\n ..."}`"""
+        self._comments: dict[tuple[Any, Any], str] = {}
+        """comments on current depth only, no data. eg: `{(dataKeyA, dataKeyB): "  // comment\n ..."}`"""
         self.loads(data)
 
     def _add_indent(self, comment: str, indent: str) -> str:
@@ -129,64 +133,161 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
             return comment
         return comment.replace("\n", "\n" + indent)
 
-    def loads(self, raw: str) -> Mapping:
-        """bake `self` data-only-dict with hint from `raw` (like `self`'s crutch🦯)"""
-        if not raw:
-            return {}
-        raw = raw.replace("\r", "")
+    @staticmethod
+    def _is_keypath(key: Any) -> TypeIs[Sequence]:
+        return isinstance(key, Sequence) and not isinstance(
+            key, (str, bytes, bytearray, Between)
+        )
 
+    def rebuild(self):
+        self.forkGraph = WeakKeyDictionary()
+        nodes = tuple(
+            dfs(
+                self,
+                cls=type(self),
+                forkGraph=self.forkGraph,
+                pathCount=self.pathCount,
+                getChild=self.getChild,
+            )
+        )
+        for node in nodes:
+            if not isinstance(node, jsoncDict):
+                continue
+            node.__loads = self.__loads
+            node.__dumps = self.__dumps
+            node.slash_dash = self.slash_dash
+            node.auto_indent = self.auto_indent
+            node._comments = getattr(node, "_comments", {})
+        self.del_cache()
+        return self
+
+    def __loads_root_container(self, root: ts.Node) -> ts.Node | None:
+        for child in root.children:
+            if child.type in ("object", "array"):
+                return child
+        return None
+
+    def __loads_pair_key(self, node: ts.Node) -> Any:
+        key = node.child_by_field_name("key")
+        if key and key.type == "string":
+            content = key.child(1)
+            if content and content.text:
+                return content.text.decode()
+        raise ValueError(f"unsupported json object key node: {node}")
+
+    def __loads_item_key(self, container: ts.Node, node: ts.Node, index: int) -> Any:
+        if container.type == "object":
+            return self.__loads_pair_key(node)
+        return index
+
+    def __loads_item_value(self, node: ts.Node) -> ts.Node:
+        return node.child_by_field_name("value") or node
+
+    def __loads_is_item(self, container: ts.Node, node: ts.Node) -> bool:
+        if not node.is_named or node.type == "comment":
+            return False
+        return node.type == "pair" if container.type == "object" else True
+
+    def __loads_set_comment(
+        self, owner: Self, key_a: Any, key_b: Any, text: str
+    ) -> None:
+        if text:
+            owner._comments[(key_a, key_b)] = text
+
+    def __loads_reset_comments(self, owner: Self) -> None:
+        owner.header = ""
+        owner.footer = ""
+        owner._comments = {}
+        raw = owner.v
+        if isinstance(raw, Mapping):
+            keys = raw.keys()
+        elif iterable(raw):
+            keys = range(len(raw))
+        else:
+            return
+        for key in keys:
+            child = owner[key]
+            if isinstance(child, jsoncDict):
+                self.__loads_reset_comments(child)
+
+    def __loads_collect_inner_comment(
+        self, owner: Self, node: ts.Node, byte: bytes
+    ) -> None:
+        if node.type != "pair":
+            return
+        comments = [child for child in node.children if child.type == "comment"]
+        if not comments:
+            return
+        key = self.__loads_pair_key(node)
+        self.__loads_set_comment(
+            owner,
+            key,
+            key,
+            byte[comments[0].start_byte : comments[-1].end_byte].decode(),
+        )
+
+    def __loads_walk_container(
+        self, owner: Self, container: ts.Node, byte: bytes
+    ) -> None:
+        prev_key = UNSET
+        pending_start: int | None = None
+        pending_end: int | None = None
+        index = 0
+
+        for child in container.children:
+            if child.type == "comment":
+                if pending_start is None:
+                    pending_start = child.start_byte
+                pending_end = child.end_byte
+                continue
+            if not self.__loads_is_item(container, child):
+                continue
+
+            key = self.__loads_item_key(container, child, index)
+            if pending_start is not None and pending_end is not None:
+                self.__loads_set_comment(
+                    owner, prev_key, key, byte[pending_start:pending_end].decode()
+                )
+                pending_start = pending_end = None
+
+            self.__loads_collect_inner_comment(owner, child, byte)
+            value = self.__loads_item_value(child)
+            if value.type in ("object", "array"):
+                child_owner = owner[key]
+                if isinstance(child_owner, jsoncDict):
+                    self.__loads_walk_container(child_owner, value, byte)
+
+            prev_key = key
+            if container.type == "array":
+                index += 1
+
+        if pending_start is not None and pending_end is not None:
+            self.__loads_set_comment(
+                owner, prev_key, UNSET, byte[pending_start:pending_end].decode()
+            )
+
+    def loads(self, raw: str) -> Self:
+        """Bake comment layout hints from `raw` into `self.comments`, `header`, and `footer`."""
+        self.__loads_reset_comments(self)
+        if not raw:
+            return self
+
+        raw = raw.replace("\r", "")
         byte = raw.encode()
         tree: ts.Tree = self._parser.parse(byte)
-        head = True
-        start = end = 0
-        keyA = UNSET
+        root = tree.root_node
+        if root.is_error:
+            Log.error("tree-sitter-json: %s", root)
+            return self
 
-        def dfs(node: ts.Node):
-            nonlocal head, start, end, keyA
-            if node.is_error:
-                Log.error("tree-sitter-json: %s", node)
-                return
-            if head and node.type in ("object", "array"):
-                head = False
-                self.header = byte[: node.start_byte].decode()
-                self.footer = byte[node.end_byte :].decode()
-                # Log.debug("header: %s\nfooter:%s", self.header, self.footer)
-            if not (node.is_named and node.text):
-                return
-            text = node.text.decode()
+        container = self.__loads_root_container(root)
+        if container is None:
+            self.header = raw
+            return self
 
-            if node.type == "comment":
-                Log.debug("comment:\t%s", text)
-                if start is None:
-                    start = node.start_byte
-                end = node.end_byte
-                return
-            elif node.type == "pair":
-                # TODO: pair or array
-                kNode = node.child_by_field_name("key")
-                if kNode and kNode.type == "string":
-                    content = kNode.child(1)
-                    if content and content.text:
-                        text = content.text.decode()
-
-                ab = [(keyA, text)]
-                self.comments[ab] = byte[start:end].decode()
-                keyA = text
-                start = None
-
-                vNode = node.child_by_field_name("value")
-                if vNode and vNode.type in ("object", "array"):
-                    for child in node.children:
-                        dfs(child)
-            Log.debug("%s:\t%s\ntext:%s", node.type, node, text)
-            for child in node.children:
-                dfs(child)
-
-        for child in tree.root_node.children:
-            dfs(child)
-
-        # NOTE: find footer
-
+        self.header = byte[: container.start_byte].decode()
+        self.footer = byte[container.end_byte :].decode()
+        self.__loads_walk_container(self, container, byte)
         return self
 
     def dumps(self, obj: Any | None = None, depth=0) -> str:
@@ -194,23 +295,64 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         if obj is None:
             obj = self.v
         obj = unref(obj)
-        inner = self.__dumps_raw(obj)
+        mixed = self.__dumps(obj)
         # TODO: implement this
 
         return out
 
+    @property
+    def comments(self) -> dict[tuple, dict[tuple[Any, Any], str]]:
+        """computed from children's _comments. eg: `{(): {...}, ("keypath_child"): {...}, ("kp1","kp2"): {...}}`"""
+        out: dict[tuple, dict[tuple[Any, Any], str]] = {}
+
+        def collect(node: Self) -> None:
+            if node._comments:
+                out[node.keypath] = dict(node._comments)
+            for _, child in node.getChild(node, node.v):
+                if isinstance(child, jsoncDict):
+                    collect(child)
+
+        collect(self)
+        return out
+
     def __call__(self, *key, **kw) -> Self:
         """
+        return mixed
         `__call__` may undergo **breaking changes** in the future, based on its most common calling patterns and usage scenarios.
         """
         return self.mixed
 
     @property
     def mixed(self) -> Self:
-        """mixed view of data & comment"""
-        # TODO: implement this
-        view = type(self)(self)
-        return view
+        """mixed view of data & comment. Comment-key will be translated into Between(), which stays tuple in self.comments"""
+        mix = type(self)(
+            {},
+            loads=self.__loads,
+            dumps=self.__dumps,
+            slash_dash=self.slash_dash,
+            auto_indent=self.auto_indent,
+            deep=False,
+        )
+        prev_key = UNSET
+
+        def put(key, value) -> None:
+            OrderedDict.__setitem__(mix, key, value)
+
+        def put_comment(key_a, key_b) -> None:
+            comment = self._comments.get((key_a, key_b))
+            if comment is not None:
+                put(Between(key_a, key_b), comment)
+
+        for key, value in self.getChild(self, self.v):
+            put_comment(prev_key, key)
+            if isinstance(value, jsoncDict):
+                value = value.mixed
+            put(key, value)
+            put_comment(key, key)
+            prev_key = key
+
+        put_comment(prev_key, UNSET)
+        return mix
 
     @property
     def body(self) -> str:
@@ -235,77 +377,12 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         return get_item(self.v, key, default, noRaise)
 
     def setitem(self, key: Sequence, value, at=UNSET):
-        # TODO: self.v ? new logic in set_item()
         set_item(self if at is UNSET else at, key, value)
 
 
 class hjsonDict[K = str, V = Any](jsoncDict[K, V]):
-    _CommentPrefix = Literal["/*", "//", "#", "/-"]
-    _comment_single: tuple[_CommentPrefix, ...] = ("//", "#")
-
-    def _first_significant_char(self, text: str) -> tuple[str | None, int]:
-        n = len(text)
-        i = 0
-        in_str = False
-        escaped = False
-        in_block = False
-        in_line = False
-
-        while i < n:
-            c = text[i]
-            if in_str:
-                if escaped:
-                    escaped = False
-                elif c == "\\":
-                    escaped = True
-                elif c == '"':
-                    in_str = False
-                i += 1
-                continue
-            if in_block:
-                if text.startswith("*/", i):
-                    in_block = False
-                    i += 2
-                    continue
-                i += 1
-                continue
-            if in_line:
-                if c == "\n":
-                    in_line = False
-                i += 1
-                continue
-            if c.isspace():
-                i += 1
-                continue
-            if text.startswith("/*", i):
-                in_block = True
-                i += 2
-                continue
-            single_prefix = self._match_comment_single_prefix(text, i)
-            if single_prefix is not None:
-                in_line = True
-                i += len(single_prefix)
-                continue
-            return c, i
-        return None, -1
-
-    def dumps(self, obj: Mapping | Sequence | None = None, depth=0) -> str:
-        rendered = super().dumps(obj=obj, depth=depth)
-        if depth != 0:
-            return rendered
-        target = unref(self.v if obj is None else obj)
-        if not (
-            getattr(self, "_rootless_object", False) and isinstance(target, Mapping)
-        ):
-            return rendered
-
-        lines = rendered.splitlines()
-        if len(lines) >= 2 and lines[0] == "{" and lines[-1] == "}":
-            inner = lines[1:-1]
-            return "\n".join(
-                line[2:] if line.startswith("  ") else line for line in inner
-            )
-        return rendered
+    pass
+    # TODO
 
 
 class CompactJSONEncoder(json.JSONEncoder):
