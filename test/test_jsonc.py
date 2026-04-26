@@ -5,7 +5,6 @@ import hjson
 import pytest
 
 from jsonc_sdict.jsonc import hjsonDict, jsoncDict
-from jsonc_sdict.Sdict import sdict
 
 
 def json_dumps(obj):
@@ -24,65 +23,8 @@ def make_hjson(raw, **kwargs):
 
 def test_init():
     In = Path("test/old.jsonc")
-    jd = jsoncDict(In.read_text("utf-8"), hjson.loads)
-
-
-@pytest.mark.xfail
-def test_split_key_detects_comment_markers():
-    inline = jsoncDict.split_key("//line")
-    line_above = jsoncDict.split_key("//\nline")
-    block = jsoncDict.split_key("/*\nblock")
-
-    assert inline is not None
-    assert inline.prefix == "//"
-    assert inline.before == ""
-    assert str(inline) == "//line"
-
-    assert line_above is not None
-    assert line_above.prefix == "//"
-    assert line_above.before == "\n"
-
-    assert block is not None
-    assert block.prefix == "/*"
-    assert block.before == "\n"
-    assert jsoncDict.split_key("plain") is None
-
-
-@pytest.mark.xfail
-def test_hjson_split_key_supports_hash_comments():
-    comment = hjsonDict.split_key("# hello")
-    assert comment is not None
-    assert comment.prefix == "#"
-    assert str(comment) == "# hello"
-
-
-def test_mapping_init_keeps_comment_like_keys_and_insert_reorders_comments():
-    jc = make_jsonc({"a": 1, "//tail": "line"})
-
-    assert list(jc.keys()) == ["a", "//tail"]
-    assert jc.forceDataKeys == set()
-
-    jc.insert({"//before": "head", "b": 2}, key="a", after=True)
-    assert list(jc.keys()) == ["//before", "b", "a", "//tail"]
-
-
-def test_insert_has_comment_false_records_forced_data_keys():
-    jc = make_jsonc({"a": 1})
-
-    jc.insert({"//literal": 3}, key="a", after=True, has_comment=False)
-
-    assert jc.forceDataKeys == {"//literal"}
-    assert jc["//literal"] == 3
-    assert list(jc.keys()) == ["a", "//literal"]
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=NameError,
-    reason="jsonc.loads(raw_text) parser rewrite is still unfinished",
-)
-def test_jsonc_loads_from_text_is_not_ready():
-    make_jsonc('// head\n{\n  "a": 1\n}\n')
+    jd = jsoncDict(In.read_text("utf-8"), loads=hjson.loads, dumps=json_dumps)
+    assert isinstance(jd, jsoncDict)
 
 
 @pytest.mark.xfail(

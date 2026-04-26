@@ -46,7 +46,6 @@ from jsonc_sdict.share import (
     getLogger,
     _TODO,
 )
-from jsonc_sdict.weakList import WeakList
 
 if TYPE_CHECKING:
     from jsonc_sdict.Merge import merge as _merge
@@ -222,10 +221,16 @@ def set_item_attr(obj, keys: Sequence, value) -> None:
             obj.__dict__.update(value.__dict__)
         return
 
+    Log.debug(f"{obj=}\t{list(iSlice(keys))=}")
     parent = get_item_attr(obj, iSlice(keys))
     k = keys[-1]
-    if hasattr(obj, "__setitem__"):
-        parent[k] = value  # type: ignore
+    if hasattr(parent, "__setitem__"):
+        # Bypass sdict.__setitem__ keypath/ref dispatch on the leaf container.
+        if isinstance(parent, sdict):
+            OrderedDict.__setitem__(parent, k, value)
+            parent.del_cache(only=parent._cached_child)
+        else:
+            parent[k] = value  # type: ignore
     else:
         setattr(parent, k, value)
 
@@ -246,8 +251,12 @@ def del_item_attr(obj, keys: Sequence) -> None:
         return
     parent = get_item_attr(obj, iSlice(keys))
     k = keys[-1]
-    if hasattr(obj, "__delitem__"):
-        del parent[k]  # type: ignore
+    if hasattr(parent, "__delitem__"):
+        if isinstance(parent, sdict):
+            OrderedDict.__delitem__(parent, k)
+            parent.del_cache(only=parent._cached_child)
+        else:
+            del parent[k]  # type: ignore
     else:
         delattr(parent, k)
 
@@ -840,10 +849,14 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
                 "%s is sdict, use deepcopy(mySdict) or copy(mySdict) to keep internal states",
                 type(data),
             )
+        if data and ref:
+            Log.warning(
+                "data=%s and ref=%s, `self.v` prefers data. Change this with `self.use_ref=True`"
+            )
 
         self.repr = False
         """if you want `{}`, set to False; if you want `sdict({})` truly raw data, set to True"""
-        self.use_ref: bool = data is None
+        self.use_ref: bool = bool(ref) and data is None
         """affect the return of self.v"""
         super().__init__(data or ())
         self.ref = ref
@@ -907,6 +920,12 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """deep unref all `sdict.v`, used for `json.dumps(sd.unref)`"""
         return unref(self.v)
 
+    def __hint_e(self, key, e: BaseException):
+        if self._is_keypath(key):
+            e.add_note(
+                f"If {key!r} is a single key, not a key path, wrap it in an outer list or tuple, for example: [{key!r}]"
+            )
+
     @staticmethod
     def _is_keypath(key: Any) -> TypeIs[Sequence]:
         return isinstance(key, Sequence) and not isinstance(
@@ -925,7 +944,11 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         ),
     ):
         """see `get_item_attr()`"""
-        return get_item_attr(self.v, key, default, noRaise)
+        try:
+            return get_item_attr(self.v, key, default, noRaise)
+        except (KeyError, IndexError, TypeError, AttributeError) as e:
+            self.__hint_e(key, e)
+            raise
 
     @overload
     def __getitem__(self, key: slice) -> list[Any]: ...
@@ -964,9 +987,13 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             raise _TODO
         return v
 
-    def setitem(self, key: Sequence[K], value, at=UNSET):
+    def setitem(self, key: Sequence[K], value, at=None):
         """see `set_item_attr()`"""
-        return set_item_attr(self.v if at is UNSET else at, key, value)
+        try:
+            return set_item_attr(self.v if at is None else at, key, value)
+        except (KeyError, IndexError, TypeError, AttributeError) as e:
+            self.__hint_e(key, e)
+            raise
 
     def __setitem__(self, key: K | Sequence[K] | slice, value):
         if isinstance(key, slice):
@@ -981,10 +1008,15 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
     def birth(self, key: K | Iterable[K], existOk: bool = True) -> Self:
         """access or create keypath's value if not existed. eg: `mkdir -p`"""
+        raise _TODO  # TODO
 
-    def delitem(self, key: Sequence[K], at=UNSET):
+    def delitem(self, key: Sequence[K], at=None):
         """see `del_item_attr()`"""
-        return del_item_attr(self.v if at is UNSET else at, key)
+        try:
+            return del_item_attr(self.v if at is None else at, key)
+        except (KeyError, IndexError, TypeError, AttributeError) as e:
+            self.__hint_e(key, e)
+            raise
 
     def __delitem__(self, key: K | Sequence[K] | slice):
         if isinstance(key, slice):
@@ -1010,9 +1042,6 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     def __call__(self, *key, **kw) -> Self:
         """
         `__call__` may undergo **breaking changes** in the future, based on its most common calling patterns and usage scenarios.
-        ```python
-
-        ```
         """
         raise _TODO
 
@@ -1225,11 +1254,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             self.del_cache(only=self._cached_parent)
         return self
 
-    def merge(
-        self,
-        obj: Mapping,
-        **kwargs: Unpack["_merge.Kwargs"],
-    ) -> Self:
+    def merge(self, obj, at=None, **kwargs: Unpack["_merge.Kwargs"]) -> Self:
         """
         Merge `obj` into `self` in place.
 
@@ -1241,7 +1266,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             raise ValueError("sdict.merge() got unexpected keyword argument 'old_new'")
         from jsonc_sdict.Merge import merge
 
-        merge((self, obj), **kwargs).solve_all()
+        merge((at if at is not None else self, obj), **kwargs).solve_all()
         return self
 
     def keys_flat(
@@ -1429,17 +1454,30 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             try:
                 return list(self.keys()).index(key)
             except ValueError as e:
-                raise ValueError(f"Key {key!r} not found") from e
+                e.add_note(f"Key {key!r} not found")
+                raise
         else:
             try:
                 return list(self.values()).index(value)
             except ValueError as e:
-                raise ValueError(f"Value {value!r} not found") from e
+                e.add_note(f"Value {value!r} not found")
+                raise
 
     # TODO cache?
     def i_to_k(self, index: int) -> K:
         """index to key"""
-        return tuple(self.keys())[index]
+        keys = self.keys()
+        if index < 0:
+            stop = -index
+            keys = reversed(keys)
+        else:
+            stop = index + 1
+            keys = iter(keys)
+        if stop > len(self):
+            raise IndexError(f"{index=} out of range={len(self)}")
+        for _ in range(stop):
+            k = next(keys)
+        return k
 
     def v_to_k(self, value: V):
         """value to keys"""
@@ -1489,6 +1527,19 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
     def nodePath(self) -> Iterator[Self]:
         """This is unstable for shared nodes; use `.keypaths` in that case."""
         return next(self.nodePaths)
+
+    @property
+    def pairkeys(self) -> Generator[K]:
+        """reverse lookup what's key of current value"""
+        for p in self.parents:
+            if isinstance(p, Mapping):
+                for k, v in p.items():
+                    if self == v:
+                        yield k
+
+    @property
+    def pairkey(self) -> K:
+        return next(self.pairkeys)
 
     @property
     def _parentWithKey(self) -> Generator[tuple[Self, Any], Never, None]:

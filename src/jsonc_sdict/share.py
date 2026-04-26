@@ -2,7 +2,6 @@
 
 import re
 import os
-import sys
 import ast
 import inspect
 import logging
@@ -20,10 +19,9 @@ from collections.abc import (
     Sized,
 )
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, UnionType
 from typing import (
     Protocol,
-    cast,
     get_args,
     overload,
     Any,
@@ -34,7 +32,31 @@ from typing import (
     FrozenSet,
     ParamSpec,
     TypeAliasType,
+    get_origin,
 )
+
+
+def _unpack_alias[T](typ: T) -> T:
+    while type(typ) is TypeAliasType:
+        typ = typ.__value__
+    return typ
+
+
+def _unpack_type[T](typ: T) -> Generator[T, Never, None]:
+    typ = _unpack_alias(typ)
+    if get_origin(typ) in (Union, UnionType):
+        for member in get_args(typ):
+            yield from _unpack_type(member)
+        return
+    args = get_args(typ)
+    if args:
+        yield from args
+        return
+    yield typ
+
+
+def args_of_type[T](typ: T) -> tuple[T, ...]:
+    return tuple(dict.fromkeys(_unpack_type(typ)))
 
 
 type RAISE = "RAISE"  # type:ignore
@@ -43,12 +65,13 @@ type UNSET = "UNSET"  # type: ignore
 """do NOT use this arg, like undefined"""
 type NONE = "NONE"  # type: ignore
 """gen.send(NONE) to give None as new value"""
-Scalar = None | bool | int | float | str | bytes | bytearray
-"""yaml support byte by `!!binary |\\n`"""
+Scalar = None | bool | int | float | complex | str | bytes
+"""yaml support byte by `!!binary |\\n`, json do NOT support complex,bytes"""
 ImmutableContainers = tuple | MappingProxyType | FrozenSet
 PS = ParamSpec("PS")
 
 LOG = os.environ.get("LOG", "INFO").upper()
+# NOTE: vscode will setup $TERM_PROGRAM in env
 IS_DEBUG = LOG == "DEBUG" or os.environ.get("TERM_PROGRAM", None)
 logging.basicConfig(format="%(levelname)s %(asctime)s %(name)s:%(lineno)d\t%(message)s")
 if IS_DEBUG:
@@ -340,25 +363,6 @@ def text_from_shell(path_or_str: str) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else path_or_str
 
 
-def typeof[T](alias: T) -> T:
-    while type(alias) is TypeAliasType:
-        alias = alias.__value__
-    return alias
-
-
-def unpack_type[T](typ: T) -> Generator[T, Never, None]:
-    typ = typeof(typ)
-    if type(typ) is Union:
-        for member in get_args(typ):
-            yield from unpack_type(member)
-        return
-    yield from get_args(typ)
-
-
-def args_of_type[T](typ: T) -> tuple[T, ...]:
-    return tuple(dict.fromkeys(unpack_type(typ)))
-
-
 @dataclass
 class ModVars:
     Class: list[str]
@@ -452,11 +456,3 @@ class RegexPattern[S: (str, bytes)](Protocol):
     def split(self, *args, **kw) -> list[S]: ...
     def sub(self, *args, **kw) -> S: ...
     def subn(self, *args, **kw) -> tuple[S, int]: ...
-
-
-def search(string: str, pattern: str | RegexPattern, start=0, end=sys.maxsize):
-    if isinstance(pattern, str):
-        index = string.find(pattern, start, end)
-        return None if index == -1 else index
-    pattern = cast(re.Pattern, pattern)
-    return pattern.search(string, start, end)

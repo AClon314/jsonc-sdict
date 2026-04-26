@@ -191,6 +191,20 @@ def test_nested_helper_mutators_work_in_place():
     assert not hasattr(root.child, "extra")
 
 
+def test_nested_helper_mutators_follow_parent_container_type():
+    class Box:
+        pass
+
+    root = Box()
+    root.child = {"value": 2, "extra": 3}
+
+    set_item_attr(root, ["child", "value"], 8)
+    assert root.child["value"] == 8
+
+    del_item_attr(root, ["child", "extra"])
+    assert "extra" not in root.child
+
+
 def test_unref_handles_nested_sdict_and_const_mode():
     wrapped = {
         "left": sdict({"x": 1}),

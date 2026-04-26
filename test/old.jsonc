@@ -19,6 +19,13 @@
   },
   "node": {
     "do not ignore me": "i am real data!"
-  }
+  },
+  "list": [
+    0,
+    // 1,
+    "2",
+    null,
+    true
+  ]
 }
 // eof
