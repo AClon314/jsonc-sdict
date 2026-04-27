@@ -8,12 +8,12 @@ import re
 import json
 from uuid import uuid4
 from collections import OrderedDict
-from weakref import WeakKeyDictionary
 from collections.abc import (
     Callable,
     Mapping,
     Sequence,
     Iterable,
+    MutableMapping,
 )
 from typing import Any, TypeIs, Unpack, Literal, cast, Self
 
@@ -28,7 +28,7 @@ from jsonc_sdict.share import (
     args_of_type,
     _TODO,
 )
-from jsonc_sdict.Sdict import sdict, dfs, set_item, get_item, unref
+from jsonc_sdict.Sdict import sdict, unref
 
 Log = getLogger(__name__)
 _Type_BeforeSep = Literal["", "\n", ",", "k", ":", "v"]
@@ -47,6 +47,9 @@ def json_dumps(obj: Any, indent: int | None = 2) -> str:
 class Between[A, B](tuple[A, B]):
     """comment between 2 data-keys"""
 
+    _COMMENT = f"_COMMENT-{uuid4().hex}"
+    """for restore comments after dumps()"""
+
     def __new__(cls, a: A, b: B) -> Self:
         return super().__new__(cls, (a, b))
 
@@ -58,25 +61,20 @@ def is_comment[A, B](key: Between[A, B] | Any) -> TypeIs[Between[A, B]]:
     return isinstance(key, Between)
 
 
-class jsoncDict[K = str, V = Any](sdict[K, V]):
+class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     """
     ### Usage
-    life cycle: jsonc() init → user's `jc.insert_comment()` → `jc.full` from jc.dumps()
+    life cycle: jsonc() init → user's `jc.comments[(dataKeyA, dataKeyB)] = "..."` → `jc.full` from jc.dumps()
     ```python
     jc = jsoncDict(my_str, loads=hjson.loads)
-    jc["//unique-keyname"] = "my comment but at end of body"
-    jc.insert_comment({
-        "/*\\nunique-keyname-1": "my multi-\\nline comments\\n",
-        "//\\nunique-keyname-2": "my line-above comments",
-        "\\//escape": ["treat as data, not comment, keyname is `//escape`"],
-        "\\\\//escape": ["keyname is `\\//escape`"],
-        }, "existedKey"
-    )
-    f.write(jc.full)
+    # TODO: update doc
     ```
     """
 
-    __dumps = json_dumps
+    __loads: Callable[[str], Any]
+    """callable & able to parse `.jsonc` at least, to parse raw text, eg: `hjson.loads`"""
+    __dumps: Callable[[Any], str] = json_dumps
+    """same as `__loads`"""
     slash_dash = True
     """default True. if key_name starts_with `/-`, like `/-mynode` will comment the whole tree node, see [kdl](https://kdl.dev/) config style"""
     auto_indent = True
@@ -85,16 +83,32 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     footer = ""
     _parser = ts.Parser(ts.Language(ts_json.language()))
     """tree-sitter parser"""
-    _COMMENT = f"_COMMENT-{uuid4().hex}"
-    """for restore comments after dumps()"""
+
+    @classmethod
+    def config(
+        cls,
+        *,
+        loads: Callable[[str], Any] | UNSET = UNSET,
+        dumps: Callable[[Any], str] | UNSET = UNSET,
+        slash_dash: bool | UNSET = UNSET,
+        auto_indent: bool | UNSET = UNSET,
+    ) -> None:
+        if loads is not UNSET:
+            cls.__loads = loads
+        if dumps is not UNSET:
+            cls.__dumps = dumps
+        if slash_dash is not UNSET:
+            cls.slash_dash = slash_dash
+        if auto_indent is not UNSET:
+            cls.auto_indent = auto_indent
 
     def __init__(
         self,
         data: str | Mapping[K, V],
-        loads: Callable[[str], Any] | None = None,
-        dumps: Callable[[Any], str] = __dumps,
-        slash_dash: bool = slash_dash,
-        auto_indent: bool = auto_indent,
+        loads: Callable[[str], Any] | UNSET = UNSET,
+        dumps: Callable[[Any], str] | UNSET = UNSET,
+        slash_dash: bool | UNSET = UNSET,
+        auto_indent: bool | UNSET = UNSET,
         **kwargs: Unpack[sdict.Kwargs],
     ):
         """
@@ -107,29 +121,47 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
             auto_indent: default True. Auto-indent for multi-line comment. if False, then you need manually handle indent
             **kwargs: see `sdict()`
         """
-        self.__loads = loads
-        self.__dumps = dumps
-        self.slash_dash = slash_dash
-        self.auto_indent = auto_indent
+        cls = type(self)
+        cls.config(
+            loads=loads,
+            dumps=dumps,
+            slash_dash=slash_dash,
+            auto_indent=auto_indent,
+        )
 
         if isinstance(data, str):
-            if self.__loads is None:
+            loads_fn = cls.__loads
+            if loads_fn is None:
                 raise ValueError("missing arg `loads` when `raw` is str")
-            obj = self.__loads(data)
+            obj = loads_fn(data)
         else:
             obj = data
             data = ""
 
         # NOTE: 其实raw(str)并不重要，我们只关心 data(dict)
         # `sdict.__init__` may call `self.__setitem__`, so setup attrs before this call.
-        super().__init__(obj, **kwargs)
-        self._comments: dict[tuple[Any, Any], str] = {}
-        """comments on current depth only, no data. eg: `{(dataKeyA, dataKeyB): "  // comment\n ..."}`"""
+        self.data: sdict[K, V] = sdict(obj, **kwargs)
+        """Pure data, no comment. Include `/-`(slash-dash) as data-key."""
+        self.comments: dict[tuple[Any, Any], str] = {}
+        """Only comments on current depth, no data. eg: `{(dataKeyA, dataKeyB): "  // comment\n ..."}`"""
+        self.commentKeys = []
+        """for switch() to record status for commented or not, **on current depth**"""
+        self.children: dict[K, Self] = {}
+        """cache to maintain jsoncDict proxy childrens"""
         self.loads(data)
+
+    def Proxy(self, data: sdict[K, V]) -> Self:
+        """return new jsoncDict for self.mixed's children"""
+        node = cast(Self, type(self).__new__(type(self)))
+        node.data = data
+        node.comments = {}
+        node.commentKeys = []
+        node.children = {}
+        return node
 
     def _add_indent(self, comment: str, indent: str) -> str:
         """add indent before comment, used in restore phase"""
-        if not self.auto_indent or "\n" not in comment:
+        if not type(self).auto_indent or "\n" not in comment:
             return comment
         return comment.replace("\n", "\n" + indent)
 
@@ -139,26 +171,35 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
             key, (str, bytes, bytearray, Between)
         )
 
+    def _child(self, key: Any):
+        self._sync_children()
+        value = self.data[key]
+        if not isinstance(value, sdict):
+            return value
+        child = self.children.get(key)
+        if child is not None and child.data is value:
+            return child
+
+        child = self.Proxy(value)
+        self.children[key] = child
+        return child
+
+    def _iter_data_items(self) -> Iterable[tuple[Any, Any]]:
+        return self.data.getChild(self.data, self.data.v)
+
+    def _sync_children(self) -> None:
+        current: dict[Any, Self] = {}
+        by_data_id = {id(child.data): child for child in self.children.values()}
+        for key, value in self._iter_data_items():
+            if isinstance(value, sdict):
+                child = by_data_id.get(id(value))
+                if child is not None:
+                    current[key] = child
+        self.children = current
+
     def rebuild(self):
-        self.forkGraph = WeakKeyDictionary()
-        nodes = tuple(
-            dfs(
-                self,
-                cls=type(self),
-                forkGraph=self.forkGraph,
-                pathCount=self.pathCount,
-                getChild=self.getChild,
-            )
-        )
-        for node in nodes:
-            if not isinstance(node, jsoncDict):
-                continue
-            node.__loads = self.__loads
-            node.__dumps = self.__dumps
-            node.slash_dash = self.slash_dash
-            node.auto_indent = self.auto_indent
-            node._comments = getattr(node, "_comments", {})
-        self.del_cache()
+        self.data.rebuild()
+        self.children.clear()
         return self
 
     def __loads_root_container(self, root: ts.Node) -> ts.Node | None:
@@ -192,13 +233,15 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         self, owner: Self, key_a: Any, key_b: Any, text: str
     ) -> None:
         if text:
-            owner._comments[(key_a, key_b)] = text
+            owner.comments[(key_a, key_b)] = text
 
     def __loads_reset_comments(self, owner: Self) -> None:
-        owner.header = ""
-        owner.footer = ""
-        owner._comments = {}
-        raw = owner.v
+        if owner is self:
+            owner.header = ""
+            owner.footer = ""
+        owner.comments = {}
+        owner.children.clear()
+        raw = owner.data.v
         if isinstance(raw, Mapping):
             keys = raw.keys()
         elif iterable(raw):
@@ -206,7 +249,7 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         else:
             return
         for key in keys:
-            child = owner[key]
+            child = owner._child(key)
             if isinstance(child, jsoncDict):
                 self.__loads_reset_comments(child)
 
@@ -290,69 +333,112 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
         self.__loads_walk_container(self, container, byte)
         return self
 
-    def dumps(self, obj: Any | None = None, depth=0) -> str:
-        """restore"""
+    def dumps(self, obj: Any | None = None) -> str:
+        """需要先将Between转为"""
         if obj is None:
-            obj = self.v
+            obj = self.data.v
         obj = unref(obj)
-        mixed = self.__dumps(obj)
+        mixed = type(self).__dumps(obj)
         # TODO: implement this
 
         return out
 
     @property
-    def comments(self) -> dict[tuple, dict[tuple[Any, Any], str]]:
-        """computed from children's _comments. eg: `{(): {...}, ("keypath_child"): {...}, ("kp1","kp2"): {...}}`"""
+    def mixed(self) -> OrderedDict[Any, Any]:
+        out: OrderedDict[Any, Any] = OrderedDict()
+        prev_key = UNSET
+
+        for key, _ in self._iter_data_items():
+            comment = self.comments.get((prev_key, key))
+            if comment is not None:
+                out[Between(prev_key, key)] = comment
+            out[key] = self._child(key)
+            comment = self.comments.get((key, key))
+            if comment is not None:
+                out[Between(key, key)] = comment
+            prev_key = key
+
+        comment = self.comments.get((prev_key, UNSET))
+        if comment is not None:
+            out[Between(prev_key, UNSET)] = comment
+        return out
+
+    @property
+    def comments_flat(self) -> dict[tuple, dict[tuple[Any, Any], str]]:
+        """computed from children's comments. eg: `{(): {...}, ("keypath"): {...}, ("kp1","kp2"): {...}}`"""
         out: dict[tuple, dict[tuple[Any, Any], str]] = {}
 
         def collect(node: Self) -> None:
-            if node._comments:
-                out[node.keypath] = dict(node._comments)
-            for _, child in node.getChild(node, node.v):
+            if node.comments:
+                out[node.data.keypath] = dict(node.comments)
+            for key, _ in node._iter_data_items():
+                child = node._child(key)
                 if isinstance(child, jsoncDict):
                     collect(child)
 
         collect(self)
         return out
 
-    def __call__(self, *key, **kw) -> Self:
-        """
-        return mixed
-        `__call__` may undergo **breaking changes** in the future, based on its most common calling patterns and usage scenarios.
-        """
-        return self.mixed
-
     @property
-    def mixed(self) -> Self:
-        """mixed view of data & comment. Comment-key will be translated into Between(), which stays tuple in self.comments"""
-        mix = type(self)(
-            {},
-            loads=self.__loads,
-            dumps=self.__dumps,
-            slash_dash=self.slash_dash,
-            auto_indent=self.auto_indent,
-            deep=False,
-        )
-        prev_key = UNSET
+    def commentKeys_flat(self) -> dict[tuple, list[str]]:
+        """computed from children's commentKeys. eg: `{():[...], ("keypath"):[...], ("kp1","kp2"):[...]}`"""
+        out: dict[tuple, list[str]] = {}
 
-        def put(key, value) -> None:
-            OrderedDict.__setitem__(mix, key, value)
+        def collect(node: Self) -> None:
+            if node.commentKeys:
+                out[node.data.keypath] = node.commentKeys
+            for key, _ in node._iter_data_items():
+                child = node._child(key)
+                if isinstance(child, jsoncDict):
+                    collect(child)
 
-        def put_comment(key_a, key_b) -> None:
-            comment = self._comments.get((key_a, key_b))
-            if comment is not None:
-                put(Between(key_a, key_b), comment)
+        collect(self)
+        return out
 
-        for key, value in self.getChild(self, self.v):
-            put_comment(prev_key, key)
-            if isinstance(value, jsoncDict):
-                value = value.mixed
-            put(key, value)
-            put_comment(key, key)
-            prev_key = key
+    def __getitem__(self, key):
+        if self._is_keypath(key):
+            value = self
+            for part in key:
+                value = value[part]
+            return value
+        return self.mixed[key]
 
-        put_comment(prev_key, UNSET)
-        return mix
+    def __setitem__(self, key, value) -> None:
+        if is_comment(key):
+            self.comments[tuple(key)] = value
+            return
+        if self._is_keypath(key):
+            keys = tuple(key)
+            if not keys:
+                raise KeyError(key)
+            parent = self if len(keys) == 1 else self[keys[:-1]]
+            parent[keys[-1]] = value
+            return
+        self.data[key] = value
+        self.children.pop(key, None)
+
+    def __delitem__(self, key) -> None:
+        if is_comment(key):
+            del self.comments[tuple(key)]
+            return
+        if self._is_keypath(key):
+            keys = tuple(key)
+            if not keys:
+                raise KeyError(key)
+            if len(keys) == 1:
+                del self[keys[0]]
+                return
+            parent = self[keys[:-1]]
+            del parent[keys[-1]]
+            return
+        del self.data[key]
+        self.children.pop(key, None)
+
+    def __iter__(self):
+        return iter(self.mixed)
+
+    def __len__(self) -> int:
+        return len(self.mixed)
 
     @property
     def body(self) -> str:
@@ -362,22 +448,6 @@ class jsoncDict[K = str, V = Any](sdict[K, V]):
     def full(self) -> str:
         """header + body + footer"""
         return self.header + self.body + self.footer
-
-    def getitem(
-        self,
-        key: Iterable,
-        default=None,
-        noRaise: tuple[type[BaseException], ...] = (
-            KeyError,
-            IndexError,
-            TypeError,
-            AttributeError,
-        ),
-    ):
-        return get_item(self.v, key, default, noRaise)
-
-    def setitem(self, key: Sequence, value, at=UNSET):
-        set_item(self if at is UNSET else at, key, value)
 
 
 class hjsonDict[K = str, V = Any](jsoncDict[K, V]):
