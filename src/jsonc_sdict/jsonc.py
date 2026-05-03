@@ -6,7 +6,6 @@
 
 import re
 import json
-from uuid import uuid4
 from collections import OrderedDict
 from collections.abc import (
     Callable,
@@ -14,13 +13,16 @@ from collections.abc import (
     Sequence,
     Iterable,
     MutableMapping,
+    Sized,
 )
-from typing import Any, TypeIs, Unpack, Literal, cast, Self
+from typing import Any, Never, TypeIs, Unpack, Literal, cast, Self, overload
 
 import tree_sitter as ts
 import tree_sitter_json as ts_json
 
 from jsonc_sdict.share import (
+    SEED,
+    NONE,
     UNSET,
     RegexPattern,
     getLogger,
@@ -44,30 +46,62 @@ def json_dumps(obj: Any, indent: int | None = 2) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=indent, cls=CompactJSONEncoder)
 
 
-class Between[A, B](tuple[A, B]):
-    """comment between 2 data-keys"""
+class Within[A, B = Never](tuple[A, B]):
+    """Comment address in the mixed view.
 
-    _COMMENT = f"_COMMENT-{uuid4().hex}"
+    Shapes:
+        `Within(left, right)`: comment between two neighboring logical data items.
+        `Within(key)`: comment inside one object pair's `k:` / `:v` / `v,` slots.
+
+    Boundary comments use `NONE` on one side, for example:
+        `Within(NONE, first_key)`: before the first item.
+        `Within(last_key, NONE)`: after the last item.
+    """
+
+    PREFIX = f"_Within_{SEED.hex}"
     """for restore comments after dumps()"""
 
+    @overload
     def __new__(cls, a: A, b: B) -> Self:
-        return super().__new__(cls, (a, b))
+        """comment between 2 data-keys"""
+
+    @overload
+    def __new__(cls, a: A) -> Self:
+        """comments sandwiched in 1 data-key kv slot(`k:`/`:v`/`v,`)"""
+
+    def __new__(cls, a: A, b: B | UNSET = UNSET) -> Self:
+        if b is UNSET:
+            ab = (a,)
+        else:
+            ab = cast(tuple[A, B], (a, b))
+        return super().__new__(cls, ab)
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}{self[0], self[1]}"
+        return f"{self.__class__.__name__}{tuple(self)}"
+
+    def __str__(self) -> str:
+        return f'{{"{self.PREFIX}":{json.dumps(list(self))}}}'
 
 
-def is_comment[A, B](key: Between[A, B] | Any) -> TypeIs[Between[A, B]]:
-    return isinstance(key, Between)
+def is_comment[A, B](key: Within[A, B] | Any) -> TypeIs[Within[A, B]]:
+    return isinstance(key, Within)
 
 
 class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     """
-    ### Usage
-    life cycle: jsonc() init → user's `jc.comments[(dataKeyA, dataKeyB)] = "..."` → `jc.full` from jc.dumps()
+    Mapping view over pure data plus comment layout metadata.
+
+    `self.data` stores only real values. `self.comments` stores comment positions using
+    `Within(...)` keys, so callers can read or edit comments without mixing them into the
+    underlying data container.
+
+    Usage:
+    `jsonc()` init -> edit `jc.comments[...]` -> render with `jc.full`
     ```python
     jc = jsoncDict(my_str, loads=hjson.loads)
-    # TODO: update doc
+    jc.comments[Within("a", "b")] = "// between a and b"
+    jc.comments[Within("b")] = {"k:": "/* before colon */"}
+    jc.comments[Within("b", NONE)] = "// after b"
     ```
     """
 
@@ -83,6 +117,14 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     footer = ""
     _parser = ts.Parser(ts.Language(ts_json.language()))
     """tree-sitter parser"""
+    _Type_kvSlot = (
+        Within[Literal["k"], Literal[":"]]
+        | Within[Literal[":"], Literal["v"]]
+        | Within[Literal["v"], Literal[","]]
+    )
+    type _Type_comments = dict[
+        K | Within[Any] | Within[Any, Any], str | dict[_Type_kvSlot, str]
+    ]
 
     @classmethod
     def config(
@@ -113,7 +155,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     ):
         """
         Args:
-            data: raw text with comment
+            data: raw text with comment, or mixed view(Within as comment key)
             loads: callable & able to parse `.jsonc` at least, to parse raw text, eg: `hjson.loads`
                 **required** when raw `data` is str
             dumps: same as `loads`
@@ -123,56 +165,161 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         """
         cls = type(self)
         cls.config(
-            loads=loads,
-            dumps=dumps,
-            slash_dash=slash_dash,
-            auto_indent=auto_indent,
+            loads=loads, dumps=dumps, slash_dash=slash_dash, auto_indent=auto_indent
         )
 
-        if isinstance(data, str):
-            loads_fn = cls.__loads
-            if loads_fn is None:
+        is_raw_str = isinstance(data, str)
+        comments = {}
+        if is_raw_str:
+            if cls.__loads is None:
                 raise ValueError("missing arg `loads` when `raw` is str")
-            obj = loads_fn(data)
+            obj = cls.__loads(data)
         else:
             obj = data
-            data = ""
+            if isinstance(data, Mapping):
+                obj, comments = self.split_mixed(data)
 
         # NOTE: 其实raw(str)并不重要，我们只关心 data(dict)
         # `sdict.__init__` may call `self.__setitem__`, so setup attrs before this call.
         self.data: sdict[K, V] = sdict(obj, **kwargs)
         """Pure data, no comment. Include `/-`(slash-dash) as data-key."""
-        self.comments: dict[tuple[Any, Any], str] = {}
-        """Only comments on current depth, no data. eg: `{(dataKeyA, dataKeyB): "  // comment\n ..."}`"""
-        self.commentKeys = []
-        """for switch() to record status for commented or not, **on current depth**"""
-        self.children: dict[K, Self] = {}
-        """cache to maintain jsoncDict proxy childrens"""
-        self.loads(data)
+        self.comments: jsoncDict._Type_comments = comments
+        """Comment metadata and runtime-hidden keys for the current depth.
 
-    def Proxy(self, data: sdict[K, V]) -> Self:
-        """return new jsoncDict for self.mixed's children"""
+        Key shapes:
+            `Within(left, right)`: comment between neighboring items.
+            `Within(key)`: comments inside one pair's `k:` / `:v` / `v,` slots.
+            `data_key`: runtime-hidden key; skip this data item in `items()`.
+
+        Boundary comments use `NONE`:
+        ```
+        {
+            Within(NONE, dataKeyA): "// before first item",
+            Within(dataKeyA, dataKeyB): "  // between comment\\n ...",
+            dataKeyB: "",  # runtime hidden
+            Within(dataKeyC): {
+                Within("k",":"): " /* 神人: */ // aaaa",
+                Within(":","v"): " /* 神人v */ ",
+                Within("v",","): " /* 神人, */ "
+            },
+            Within(dataKeyD, NONE): "// after last item"
+        }
+        ```
+        """
+        self.children: dict[K, Self] = {}
+        """child proxy cache, also carries nested comments for child jsoncDict views"""
+        if not is_raw_str and isinstance(data, Mapping):
+            self.children = self.__children_build(data)
+        if is_raw_str:
+            self.loads(data)
+
+    def Proxy(
+        self,
+        data: sdict[K, V],
+        comments: _Type_comments | None = None,
+        children: dict[Any, Self] | None = None,
+    ) -> Self:
+        """return new jsoncDict for self mixed-view children"""
         node = cast(Self, type(self).__new__(type(self)))
         node.data = data
-        node.comments = {}
-        node.commentKeys = []
-        node.children = {}
+        node.comments = comments if comments else {}
+        node.children = children if children else {}
         return node
 
-    def _add_indent(self, comment: str, indent: str) -> str:
-        """add indent before comment, used in restore phase"""
-        if not type(self).auto_indent or "\n" not in comment:
-            return comment
-        return comment.replace("\n", "\n" + indent)
+    # mixed view helpers
+    def split_mixed(self, mapping: Mapping) -> tuple[OrderedDict, _Type_comments]:
+        """Split a mixed mapping into pure data and comment metadata.
+
+        The input may contain normal data keys, `Within(...)` comment keys, or nested mixed
+        mappings. The returned `OrderedDict` keeps only real data, while the comment dict keeps
+        the comment addresses needed to reconstruct the mixed view.
+        """
+        data_out: OrderedDict = OrderedDict()
+        comments_out: jsoncDict._Type_comments = {}
+
+        for key, value in mapping.items():
+            if is_comment(key):
+                comments_out[key] = value
+                continue
+            if not isinstance(value, Mapping):
+                data_out[key] = value
+                continue
+
+            child_data, child_comments, comment_only = self.__mixed_split_child_mapping(
+                value
+            )
+            if comment_only:
+                comments_out[key] = child_comments
+                continue
+
+            data_out[key] = child_data
+
+        return data_out, comments_out
+
+    def __mixed_split_child_mapping(
+        self, value: Mapping[Any, Any]
+    ) -> tuple[OrderedDict, _Type_comments, bool]:
+        """Split a nested mixed mapping into child data/comments and detect comment-only nodes."""
+        child_data, child_comments = self.split_mixed(value)
+        comment_only = (
+            bool(child_comments)
+            and not child_data
+            and all(is_comment(child_key) for child_key in value)
+        )
+        return child_data, child_comments, comment_only
+
+    # child proxy helpers
+    def __children_build(self, mapping: Mapping[Any, Any]) -> dict[Any, Self]:
+        """Build cached child proxies for nested mapping values present in pure data."""
+        children: dict[Any, Self] = {}
+        for key, value in mapping.items():
+            if (
+                is_comment(key)
+                or not isinstance(value, Mapping)
+                or key not in self.data
+            ):
+                continue
+            data_value = self.data[key]
+            if not isinstance(data_value, sdict):
+                continue
+            _, child_comments, comment_only = self.__mixed_split_child_mapping(value)
+            if comment_only:
+                continue
+            child = self.Proxy(data_value, comments=child_comments)
+            child.children = child.__children_build(value)
+            children[key] = child
+        return children
+
+    def __children_iter(self) -> Iterable[tuple[Any, Self]]:
+        """Yield `(key, child)` pairs for nested `sdict` values as `jsoncDict` proxies."""
+        for key, _ in self.__data_items():
+            child = self.__children_get(key)
+            if isinstance(child, jsoncDict):
+                yield key, child
+
+    def __children_sync(self) -> None:
+        """Drop stale child proxies and rebind preserved ones after `self.data` mutations."""
+        current: dict[Any, Self] = {}
+        by_data_id = {id(child.data): child for child in self.children.values()}
+        for key, value in self.__data_items():
+            if not isinstance(value, sdict):
+                continue
+            child = self.children.get(key)
+            if child is None or child.data is not value:
+                child = by_data_id.get(id(value))
+            if child is not None and child.data is value:
+                current[key] = child
+        self.children = current
 
     @staticmethod
     def _is_keypath(key: Any) -> TypeIs[Sequence]:
         return isinstance(key, Sequence) and not isinstance(
-            key, (str, bytes, bytearray, Between)
+            key, (str, bytes, bytearray, Within)
         )
 
-    def _child(self, key: Any):
-        self._sync_children()
+    def __children_get(self, key: Any):
+        """Return the mixed-view child proxy for `key`, creating it lazily when needed."""
+        self.__children_sync()
         value = self.data[key]
         if not isinstance(value, sdict):
             return value
@@ -184,31 +331,26 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         self.children[key] = child
         return child
 
-    def _iter_data_items(self) -> Iterable[tuple[Any, Any]]:
+    def __data_items(self) -> Iterable[tuple[Any, Any]]:
+        """Iterate pure data items in storage order, excluding synthetic comment entries."""
         return self.data.getChild(self.data, self.data.v)
 
-    def _sync_children(self) -> None:
-        current: dict[Any, Self] = {}
-        by_data_id = {id(child.data): child for child in self.children.values()}
-        for key, value in self._iter_data_items():
-            if isinstance(value, sdict):
-                child = by_data_id.get(id(value))
-                if child is not None:
-                    current[key] = child
-        self.children = current
-
+    # maintenance helpers
     def rebuild(self):
         self.data.rebuild()
         self.children.clear()
         return self
 
+    # loads helpers
     def __loads_root_container(self, root: ts.Node) -> ts.Node | None:
+        """Return the top-level object/array node parsed from the source text."""
         for child in root.children:
             if child.type in ("object", "array"):
                 return child
         return None
 
     def __loads_pair_key(self, node: ts.Node) -> Any:
+        """Decode an object pair node into its logical key."""
         key = node.child_by_field_name("key")
         if key and key.type == "string":
             content = key.child(1)
@@ -216,15 +358,8 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 return content.text.decode()
         raise ValueError(f"unsupported json object key node: {node}")
 
-    def __loads_item_key(self, container: ts.Node, node: ts.Node, index: int) -> Any:
-        if container.type == "object":
-            return self.__loads_pair_key(node)
-        return index
-
-    def __loads_item_value(self, node: ts.Node) -> ts.Node:
-        return node.child_by_field_name("value") or node
-
     def __loads_is_item(self, container: ts.Node, node: ts.Node) -> bool:
+        """Check whether a child node represents a real container item, not a comment."""
         if not node.is_named or node.type == "comment":
             return False
         return node.type == "pair" if container.type == "object" else True
@@ -232,10 +367,12 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     def __loads_set_comment(
         self, owner: Self, key_a: Any, key_b: Any, text: str
     ) -> None:
+        """Store a non-empty comment span between two logical item positions."""
         if text:
-            owner.comments[(key_a, key_b)] = text
+            owner.comments[Within(key_a, key_b)] = text
 
     def __loads_reset_comments(self, owner: Self) -> None:
+        """Clear parsed comment metadata recursively before a fresh `loads()` pass."""
         if owner is self:
             owner.header = ""
             owner.footer = ""
@@ -249,30 +386,29 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         else:
             return
         for key in keys:
-            child = owner._child(key)
+            child = owner.__children_get(key)
             if isinstance(child, jsoncDict):
                 self.__loads_reset_comments(child)
 
     def __loads_collect_inner_comment(
         self, owner: Self, node: ts.Node, byte: bytes
     ) -> None:
+        """Capture comments lexically inside one object pair as single-key slot annotations."""
         if node.type != "pair":
             return
         comments = [child for child in node.children if child.type == "comment"]
         if not comments:
             return
         key = self.__loads_pair_key(node)
-        self.__loads_set_comment(
-            owner,
-            key,
-            key,
-            byte[comments[0].start_byte : comments[-1].end_byte].decode(),
-        )
+        owner.comments[Within(key)] = byte[
+            comments[0].start_byte : comments[-1].end_byte
+        ].decode()
 
     def __loads_walk_container(
         self, owner: Self, container: ts.Node, byte: bytes
     ) -> None:
-        prev_key = UNSET
+        """Walk one parsed object/array and assign surrounding comments to logical slots."""
+        prev_key = NONE
         pending_start: int | None = None
         pending_end: int | None = None
         index = 0
@@ -286,7 +422,8 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             if not self.__loads_is_item(container, child):
                 continue
 
-            key = self.__loads_item_key(container, child, index)
+            # Object items use parsed keys; array items use the running index.
+            key = self.__loads_pair_key(child) if container.type == "object" else index
             if pending_start is not None and pending_end is not None:
                 self.__loads_set_comment(
                     owner, prev_key, key, byte[pending_start:pending_end].decode()
@@ -294,7 +431,8 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 pending_start = pending_end = None
 
             self.__loads_collect_inner_comment(owner, child, byte)
-            value = self.__loads_item_value(child)
+            # Pair nodes store the nested container under the `value` field.
+            value = child.child_by_field_name("value") or child
             if value.type in ("object", "array"):
                 child_owner = owner[key]
                 if isinstance(child_owner, jsoncDict):
@@ -306,7 +444,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
         if pending_start is not None and pending_end is not None:
             self.__loads_set_comment(
-                owner, prev_key, UNSET, byte[pending_start:pending_end].decode()
+                owner, prev_key, NONE, byte[pending_start:pending_end].decode()
             )
 
     def loads(self, raw: str) -> Self:
@@ -333,67 +471,82 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         self.__loads_walk_container(self, container, byte)
         return self
 
+    # dumps helpers
     def dumps(self, obj: Any | None = None) -> str:
-        """需要先将Between转为"""
+        """dumps self.mixed by __dumps"""
+        # 1. 将Within转为json能接受的str (如何设计???), 带前缀以区别data/comment key( _COMMENT = f"_COMMENT_{uuid4().hex}:" ), 如"_COMMENT_...:[\"dataKeyA\",\"dataKeyB\"]"
+        # 2. __dumps()
+        # 3. 分歧点
+        # 3.1 直接定位comment-key: 通过 .startswith(Within._COMMENT) 来定位comment-key，然后使用 __DUMPS_STOP = regex.compile('[^\\]"') 类似的来寻找key的结尾。
+        # 3.2 先定位data-key，然后上下文搜索找到 comment-key:
+        #   通过 _esc_for_regex(key) for key in self.mixed.keys() 来获得data-key的位置，然后向上&向下搜索 Within._COMMENT 与 comment-key的 end_pos.
+        #   由于data-key在同一层dict里是唯一的，所以可以直接让comment-key变得更短?
+        # 这样得到了key的start_pos与end_pos。然后就可以将对应的 : "value..." 里面存储的原始的
         if obj is None:
-            obj = self.data.v
-        obj = unref(obj)
-        mixed = type(self).__dumps(obj)
+            obj = self.mixed
         # TODO: implement this
+        return
 
-        return out
+    def _dumps_add_indent(self, comment: str, indent: str) -> str:
+        """add indent before comment, used in restore phase"""
+        if not type(self).auto_indent or "\n" not in comment:
+            return comment
+        return comment.replace("\n", "\n" + indent)
 
     @property
     def mixed(self) -> OrderedDict[Any, Any]:
-        out: OrderedDict[Any, Any] = OrderedDict()
-        prev_key = UNSET
-
-        for key, _ in self._iter_data_items():
-            comment = self.comments.get((prev_key, key))
-            if comment is not None:
-                out[Between(prev_key, key)] = comment
-            out[key] = self._child(key)
-            comment = self.comments.get((key, key))
-            if comment is not None:
-                out[Between(key, key)] = comment
-            prev_key = key
-
-        comment = self.comments.get((prev_key, UNSET))
-        if comment is not None:
-            out[Between(prev_key, UNSET)] = comment
-        return out
+        """Materialize the current mixed view as an `OrderedDict`."""
+        return OrderedDict(self.items())
 
     @property
-    def comments_flat(self) -> dict[tuple, dict[tuple[Any, Any], str]]:
-        """computed from children's comments. eg: `{(): {...}, ("keypath"): {...}, ("kp1","kp2"): {...}}`"""
-        out: dict[tuple, dict[tuple[Any, Any], str]] = {}
+    def comments_flat(self) -> dict[tuple, jsoncDict._Type_comments]:
+        """Flatten nested `comments` dicts by `self.data.keypath`.
+
+        Example:
+            `{(): root_comments, ("a",): child_comments, ("a", "b"): grandchild_comments}`
+        """
+        out: dict[tuple, jsoncDict._Type_comments] = {}
 
         def collect(node: Self) -> None:
             if node.comments:
                 out[node.data.keypath] = dict(node.comments)
-            for key, _ in node._iter_data_items():
-                child = node._child(key)
-                if isinstance(child, jsoncDict):
-                    collect(child)
+            for _, child in node.__children_iter():
+                collect(child)
 
         collect(self)
         return out
 
-    @property
-    def commentKeys_flat(self) -> dict[tuple, list[str]]:
-        """computed from children's commentKeys. eg: `{():[...], ("keypath"):[...], ("kp1","kp2"):[...]}`"""
-        out: dict[tuple, list[str]] = {}
+    def items(self) -> Iterable[tuple[K | Within, V | str | dict]]:  # type: ignore
+        """Iterate the exported mixed view in display order.
 
-        def collect(node: Self) -> None:
-            if node.commentKeys:
-                out[node.data.keypath] = node.commentKeys
-            for key, _ in node._iter_data_items():
-                child = node._child(key)
-                if isinstance(child, jsoncDict):
-                    collect(child)
+        Yields:
+            `Within(left, right), str` for between-item comments.
+            `key, value` for visible data items.
+            `Within(key), dict[_Type_kvSlot, str] | str` for single-item slot comments.
+            `Within(last_key, NONE), str` for trailing comments.
+        """
+        prev_key = NONE
 
-        collect(self)
-        return out
+        for key, _ in self.__data_items():
+            comment = self.comments.get(Within(prev_key, key))
+            if comment is not None:
+                yield Within(prev_key, key), comment
+            if key in self.comments and not is_comment(key):
+                prev_key = key
+                continue
+            yield key, self.__children_get(key)
+            comment = self.comments.get(Within(key))
+            if comment is not None:
+                yield Within(key), comment
+            prev_key = key
+
+        comment = self.comments.get(Within(prev_key, NONE))
+        if comment is not None:
+            yield Within(prev_key, NONE), comment
+
+    def keys(self) -> Iterable[K | Within]:  # type: ignore
+        for key, _ in self.items():
+            yield key
 
     def __getitem__(self, key):
         if self._is_keypath(key):
@@ -401,11 +554,17 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             for part in key:
                 value = value[part]
             return value
-        return self.mixed[key]
+        if key in self.comments and not is_comment(key):
+            raise KeyError(key)
+        # Mixed lookup walks comments and data in the same exported iteration order.
+        for item_key, value in self.items():
+            if item_key == key:
+                return value
+        raise KeyError(key)
 
     def __setitem__(self, key, value) -> None:
         if is_comment(key):
-            self.comments[tuple(key)] = value
+            self.comments[key] = value
             return
         if self._is_keypath(key):
             keys = tuple(key)
@@ -419,7 +578,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
     def __delitem__(self, key) -> None:
         if is_comment(key):
-            del self.comments[tuple(key)]
+            del self.comments[key]
             return
         if self._is_keypath(key):
             keys = tuple(key)
@@ -435,10 +594,10 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         self.children.pop(key, None)
 
     def __iter__(self):
-        return iter(self.mixed)
+        return iter(self.keys())
 
     def __len__(self) -> int:
-        return len(self.mixed)
+        return sum(1 for _ in self.items())
 
     @property
     def body(self) -> str:
@@ -554,40 +713,3 @@ class CompactJSONEncoder(json.JSONEncoder):
             raise ValueError(
                 f"indent must either be of type int or str (is: {type(self.indent)})"
             )
-
-
-# jsoncDict(
-#     """
-# {
-#     // single-comment
-#     "a": 1
-#     /* multi-comment */
-# }
-# """.strip()
-# )
-
-# tree: ts.Tree = jsoncDict._parser.parse(
-#     b"""
-# {
-#     // single-comment
-#     "a": 1
-#     /* multi-comment */
-# }
-# """.strip()
-# )
-
-
-# def print_tree(node: ts.Node, indent=0):
-#     # 只打印具名节点 (过滤掉括号、等号等标点符号，如果想看全部可以去掉这个 if)
-#     if node.is_named:
-#         # 注意：text 返回的是 bytes，需要 decode 成字符串
-#         if node.text:
-#             text = node.text.decode("utf-8")
-#             print(". " * indent + f"{node.type}: '{text}'")
-
-#     # 递归遍历所有子节点
-#     for child in node.children:
-#         print_tree(child, indent + 1)
-
-
-# print_tree(tree.root_node)

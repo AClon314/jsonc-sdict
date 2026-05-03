@@ -831,7 +831,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         deep=True,
         forkGraph: ForkGraph[Any] | None = None,
         pathCount: PathCount = pathCount,
-        getChild: dfs.GetChildFunc = getChild,
+        getChild: dfs.GetChildFunc | None = None,
     ):
         """
         Args:
@@ -863,7 +863,8 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """can storage pydantic_model_data, list_data..."""
         self.forkGraph = forkGraph if forkGraph is not None else WeakKeyDictionary()
         self.pathCount = pathCount
-        self.getChild = getChild
+        if getChild:
+            self.getChild = getChild
         if deep:
             self.rebuild()
 

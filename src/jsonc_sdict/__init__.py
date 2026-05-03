@@ -1,6 +1,7 @@
 """Usage:
 ```python
 from jsonc_sdict import jsoncDict, sdict, merge, WeakList, NONE
+from jsonc_sdict import match_similar_lines, SimilarLineMatchResult
 ```
 """
 

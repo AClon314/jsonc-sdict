@@ -5,6 +5,7 @@ import os
 import ast
 import inspect
 import logging
+from uuid import uuid4
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from importlib import import_module
@@ -59,7 +60,7 @@ def args_of_type[T](typ: T) -> tuple[T, ...]:
     return tuple(dict.fromkeys(_unpack_type(typ)))
 
 
-type RAISE = "RAISE"  # type:ignore
+type RAISE = "RAISE"  # type: ignore
 """allow raise by default"""
 type UNSET = "UNSET"  # type: ignore
 """do NOT use this arg, like undefined"""
@@ -77,7 +78,7 @@ logging.basicConfig(format="%(levelname)s %(asctime)s %(name)s:%(lineno)d\t%(mes
 if IS_DEBUG:
     LOG = "DEBUG"
 
-
+SEED = uuid4()
 _PKG_DIR = Path(__file__).resolve().parent
 _PKG_ = __package__ or _PKG_DIR.stem
 _TODO = NotImplementedError(
