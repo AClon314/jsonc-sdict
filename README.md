@@ -9,16 +9,16 @@
 
 </div>
 
-Round-trip comments for JSONC/HJSON, with dict-like APIs that stay simple & easy for app config editing.
+Round-trip comments for JSONC/HJSON, with dict-like APIs for config editing.
 
-- Keep comments on read and write (`loads` → edit → `restore`).
+- Keep comments on read and write (`loads` → edit → `body` / `full`).
 - Work with nested structures via `sdict` ≈ [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
 - Use weak-reference ordered containers via `weakList`/`OrderedWeakSet`.
 
 > Comments are data too, just like codes are data too by John von Neumann
 
 > [!WARNING]
-> This project is currently alpha (`0.1.x`) and still being refactored.
+> This project is currently `0.2.x` and still evolving.
 
 ## Usage
 
@@ -37,9 +37,8 @@ pip install -e ".[dev]"
 ### Quick start
 
 ```python
-import json
 import hjson
-from jsonc_sdict import jsonc, AS_DATA
+from jsonc_sdict import jsoncDict, Within, NONE
 
 raw = """
 // header
@@ -50,64 +49,34 @@ raw = """
 // footer
 """
 
-def loads(self, obj):
-    return hjson.loads(obj, ...) # pre-fill your custom args here
+jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
+jc.comments[Within(NONE, "a")] = "// before a"
+jc.comments[Within("a")] = {
+    Within("k", ":"): "/* key slot */",
+    Within(":", "v"): "/* value slot */",
+    Within("v", ","): "/* tail slot */",
+}
 
-jc = jsoncDict(raw, loads, dumps=hjson.dumps)
-jc.insert_comment(
-    {
-        "/*\\nnew-block": "multi\\nline\\n",
-        "//\\nnew-line-above": "line above b\\n",
-        "//this-is-data" + AS_DATA: ["not a comment key"],
-    },
-    key="b",
-)
-
+print(jc.body)
 print(jc.full)
 ```
 
-### Comment keyname rule
+### Comment model
 
-`jsonc` stores comments as synthetic keys in the underlying mapping:
+`jsoncDict.comments` stores comment positions with `Within(...)` keys.
 
-```text
-<prefix><position-marker><id><SEED>
-```
+- `Within(left, right)` means a comment between two logical items.
+- `Within(key)` means comments attached to one pair's internal slots.
+- Slot comments use a dict with `Within("k", ":")`, `Within(":", "v")`, `Within("v", ",")`.
+- `Within(NONE, first_key)` and `Within(last_key, NONE)` handle boundary comments.
 
-- `SEED` is auto-appended to mark an internal comment key.
-- Add `AS_DATA` suffix to force a key starting with comment prefix to be treated as normal data.
-
-Common forms:
-
-| Internal key prefix | Means                                    | Restored shape                                |
-| ------------------- | ---------------------------------------- | --------------------------------------------- |
-| `//`                | single-line comment, inline mode         | after current value/comma                     |
-| `//\n`              | single-line comment, line-above mode     | independent line before next key/value        |
-| `/*`                | block comment (default)                  | inline block comment                          |
-| `/*\n`              | block comment with trailing newline mode | rendered with line break behavior             |
-| `/*,`               | block comment before comma               | placed before comma of current item           |
-| `/*k`               | block comment before key slot            | before JSON key token                         |
-| `/*:`               | block comment before colon slot          | between key and value                         |
-| `/*v`               | block comment before value slot          | after colon, before value                     |
-| `/-`                | slash_dash comment                       | comments out a whole subtree (KDL-like style) |
-
-Example mapping shape:
+Examples:
 
 ```python
-{
-    "//0<SEED>": ' "": null,',
-    "0": 0,
-    "//1<SEED>": " 0",
-    "//\n2<SEED>": ' "1": 1,/* 1 */',
-    "/*,3<SEED>": " 2 ",
-    "2": 2,
-    "/*\n4<SEED>": " 👻 ",
-    "/*v6<SEED>": " 6 ",
-    "6//": 6,
-    "/*k7<SEED>": " 7 ",
-    "7": 7,
-    "/-node<SEED>": {"ignored": "slash_dash comment"},
-    "node": {"kept": "real data"},
+jc.comments[Within("a", "b")] = "// between a and b"
+jc.comments[Within("b")] = {
+    Within("k", ":"): "/* before colon */",
+    Within(":", "v"): "/* before value */",
 }
 ```
 
@@ -143,15 +112,15 @@ LOG=DEBUG pytest -q
 
 #### jsonc
 
-- Inline comment (`//...`): stored as `//<id><SEED>`, restored near the current item.
-- Line-above comment (`//\n...`): stored as line-above mode, restored before next item.
-- Block comment (`/*...*/`): stored with mode markers (`/*`, `/*,`, `/*k`, `/*:`, `/*v`, `/*\n`) to preserve placement.
-- slash_dash comment (`/-name`): special key style that comments out a full subtree, similar to KDL config style.
+- `jsoncDict.loads()` parses comments with tree-sitter and stores them into `comments`.
+- `jsoncDict.body` renders the current value with comments restored.
+- `jsoncDict.full` returns `header + body + footer`.
+- `Within(key)` comments are stored as slot maps, not raw strings, so key/colon/value/comma placement stays explicit.
 
 #### sdict (common pitfalls)
 
 - `sdict` wraps both mapping and iterable nodes; nested access may return `sdict` views, not raw dict/list.
-- Cache fields (for example `body`, `body_restored`) rely on mutation hooks; bypassing APIs can leave stale cache.
+- `jsoncDict` output depends on comment/data mutation paths; bypassing public APIs can leave internal state inconsistent.
 - `dfs()` warns against mutating yielded data during iteration.
 - `insert(update, key=...|index=...)` is ordering-oriented: it inserts by reordering keys after update.
 
