@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """super dict, signal dict."""
 
 import re

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """wrapper of Weak(Key/Value)Dictionary"""
 
 import sys

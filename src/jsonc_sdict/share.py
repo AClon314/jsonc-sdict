@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """shared static public lib"""
 
 import re
