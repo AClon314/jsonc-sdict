@@ -44,7 +44,7 @@ def test_loads_collects_header_footer_and_comments():
     assert jd.header.startswith("/** aclon314 {} */")
     assert jd.footer == "\n// eof"
     assert jd.comments[Within(NONE, "0")] == '// {\n  // "": null,'
-    assert jd.comments[Within("6//")] == "/* 6 */"
+    assert jd.comments[Within("6//")] == {Within(":", "v"): "/* 6 */"}
     assert Within(0, 1) not in jd.comments
     assert isinstance(ls, jsoncDict)
     assert ls.comments[Within(0, 1)] == "// 1,"
@@ -58,7 +58,7 @@ def test_comments_collects_nested_comment_maps():
 
     assert () in comments
     assert ("list",) in comments
-    assert comments.get(())[Within("6//")] == "/* 6 */"
+    assert comments.get(())[Within("6//")] == {Within(":", "v"): "/* 6 */"}
     assert comments.get(("list",))[Within(0, 1)] == "// 1,"
 
 
@@ -74,14 +74,9 @@ def test_jsoncdict_preserves_current_depth_order():
     assert items[3] == ("2", 2)
     assert is_comment(items[0][0])
     assert not is_comment(items[1][0])
-    assert jd.mixed[Within("6//")] == "/* 6 */"
+    assert jd.mixed[Within("6//")] == {Within(":", "v"): "/* 6 */"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=KeyError,
-    reason="array child mixed-view iteration is currently broken for list-backed nodes",
-)
 def test_jsoncdict_recurses_into_nested_jsoncdict():
     raw = Path("test/old.jsonc").read_text("utf-8")
     jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps)
@@ -223,11 +218,27 @@ def test_children_resync_after_data_key_rename():
     assert child.comments[(0, 1)] == "// 1,"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="jsonc.dumps/body restore path is still unfinished",
-)
-def test_jsonc_body_restore_is_not_ready():
+def test_jsonc_body_restore():
     jc = make_jsonc({"a": 1})
     assert '"a": 1' in jc.body
+
+
+def test_jsonc_dumps_restores_slot_and_between_comments():
+    raw = '{\n  // head\n  "a" /*k*/ : /*cv*/ 1 /*vc*/,\n  "b": 2,\n  // list item\n  "list": [\n    0,\n    // 1,\n    2\n  ]\n}'
+    jc = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps)
+
+    assert jc.comments[Within(NONE, "a")] == "// head"
+    assert jc.comments[Within("a")] == {
+        Within("k", ":"): "/*k*/",
+        Within(":", "v"): "/*cv*/",
+        Within("v", ","): "/*vc*/",
+    }
+    assert jc.comments[Within("b", "list")] == "// list item"
+    assert list(jc["list"].items()) == [(0, 0), (Within(0, 1), "// 1,"), (1, 2)]
+
+    body = jc.body
+
+    assert '"a" /*k*/ :  /*cv*/ 1 /*vc*/' in body
+    assert '\n  // head\n  "a"' in body
+    assert '\n  // list item\n  "list"' in body
+    assert '\n    // 1,\n    2\n' in body

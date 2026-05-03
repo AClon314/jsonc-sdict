@@ -4,7 +4,6 @@
 ```
 """
 
-import re
 import json
 from collections import OrderedDict
 from collections.abc import (
@@ -22,13 +21,12 @@ import tree_sitter as ts
 import tree_sitter_json as ts_json
 
 from jsonc_sdict.share import (
-    SEED,
     NONE,
     UNSET,
-    RegexPattern,
     getLogger,
     iterable,
     args_of_type,
+    unpack_method,
     _TODO,
 )
 from jsonc_sdict.Sdict import sdict, unref
@@ -37,12 +35,6 @@ Log = getLogger(__name__)
 _Type_BeforeSep = Literal["", "\n", ",", "k", ":", "v"]
 """k : v , \n"""
 before_seps = args_of_type(_Type_BeforeSep)
-
-
-def _esc_for_regex(unEsc: str) -> str:
-    return re.escape(unEsc).replace('"', '\\"')
-
-
 def json_dumps(obj: Any, indent: int | None = 2) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=indent, cls=CompactJSONEncoder)
 
@@ -59,9 +51,6 @@ class Within[A, B = Never](tuple[A, B]):
         `Within(NONE, first_key)`: comment before the first item.
         `Within(last_key, NONE)`: comment after the last item.
     """
-
-    PREFIX = f"_COMMENT_{SEED.hex}"
-    """Serialization marker emitted ahead of items when `withPrefix` is enabled."""
 
     @overload
     def __new__(cls, a: A, b: B) -> Self:
@@ -332,7 +321,10 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
     def __data_items(self) -> Iterable[tuple[Any, Any]]:
         """Iterate pure data items in storage order, excluding synthetic comment entries."""
-        return self.data.getChild(self.data, self.data.v)
+        get_child = unpack_method(getattr(type(self.data), "getChild", None), type(self.data))
+        if get_child is None:
+            get_child = self.data.getChild
+        return get_child(self.data, self.data.v)
 
     # maintenance helpers
     def rebuild(self):
@@ -389,28 +381,110 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             if isinstance(child, jsoncDict):
                 self.__loads_reset_comments(child)
 
-    def __loads_collect_inner_comment(
-        self, owner: Self, node: ts.Node, byte: bytes
+    def __loads_pair_slots(
+        self, node: ts.Node
+    ) -> tuple[ts.Node, ts.Node | None, ts.Node | None]:
+        """Return the key, colon, and value nodes for one object pair."""
+        key = node.child_by_field_name("key")
+        value = node.child_by_field_name("value")
+        colon = next((child for child in node.children if child.type == ":"), None)
+        if key is None or colon is None:
+            raise ValueError(f"unsupported json object pair node: {node}")
+        return key, colon, value
+
+    def __loads_slot_put(
+        self,
+        slots: dict[_Type_kvSlot, str],
+        slot: _Type_kvSlot,
+        text: str,
     ) -> None:
-        """Capture comments lexically inside one object pair as single-key slot annotations."""
-        if node.type != "pair":
+        """Append parsed text into one pair slot while preserving lexical order."""
+        if not text:
             return
-        comments = [child for child in node.children if child.type == "comment"]
-        if not comments:
+        slots[slot] = slots.get(slot, "") + text
+
+    def __loads_collect_pair_comment(
+        self,
+        owner: Self,
+        key: Any,
+        slot: _Type_kvSlot,
+        text: str,
+    ) -> None:
+        """Store one pair-internal comment at the proper `Within(key)` slot."""
+        if not text:
             return
+        current = owner.comments.get(Within(key))
+        if current is None:
+            slots: dict[jsoncDict._Type_kvSlot, str] = {}
+        elif isinstance(current, Mapping):
+            slots = cast(dict[jsoncDict._Type_kvSlot, str], dict(current))
+        else:
+            # Backward-compat for legacy runtime state that still stores a raw string.
+            slots = {Within(":", "v"): cast(str, current)}
+        self.__loads_slot_put(slots, slot, text)
+        owner.comments[Within(key)] = slots
+
+    def __loads_collect_inner_comment(
+        self,
+        owner: Self,
+        node: ts.Node,
+        comment: ts.Node,
+        byte: bytes,
+    ) -> bool:
+        """Capture one pair comment when it lives inside the pair node."""
+        if node.type != "pair" or comment.type != "comment":
+            return False
+        key_node, colon, value = self.__loads_pair_slots(node)
         key = self.__loads_pair_key(node)
-        owner.comments[Within(key)] = byte[
-            comments[0].start_byte : comments[-1].end_byte
-        ].decode()
+        text = byte[comment.start_byte : comment.end_byte].decode()
+        if comment.end_byte <= colon.start_byte:
+            self.__loads_collect_pair_comment(owner, key, Within("k", ":"), text)
+            return True
+        if value is not None and comment.start_byte >= value.start_byte:
+            self.__loads_collect_pair_comment(owner, key, Within("v", ","), text)
+            return True
+        if value is None or comment.end_byte <= value.start_byte:
+            self.__loads_collect_pair_comment(owner, key, Within(":", "v"), text)
+            return True
+        return False
+
+    def __loads_consume_pending_as_value_tail(
+        self,
+        owner: Self,
+        prev_item: ts.Node | None,
+        prev_key: Any,
+        next_item: ts.Node | None,
+        text: str,
+    ) -> bool:
+        """Reclassify comment runs after an object pair value into its `v,` slot."""
+        if (
+            prev_item is None
+            or prev_item.type != "pair"
+            or prev_key is NONE
+            or not text
+        ):
+            return False
+        _, _, value = self.__loads_pair_slots(prev_item)
+        if value is None:
+            return False
+        next_start = next_item.start_byte if next_item is not None else None
+        if next_start is not None and next_start < value.end_byte:
+            return False
+        if next_start is not None and next_start < prev_item.end_byte:
+            return False
+        self.__loads_collect_pair_comment(owner, prev_key, Within("v", ","), text)
+        return True
 
     def __loads_walk_container(
         self, owner: Self, container: ts.Node, byte: bytes
     ) -> None:
         """Walk one parsed object/array and assign surrounding comments to logical slots."""
         prev_key = NONE
+        prev_item: ts.Node | None = None
         pending_start: int | None = None
         pending_end: int | None = None
         index = 0
+        saw_comma_after_prev = False
 
         for child in container.children:
             if child.type == "comment":
@@ -418,18 +492,36 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                     pending_start = child.start_byte
                 pending_end = child.end_byte
                 continue
+            if child.type == ",":
+                if (
+                    pending_start is not None
+                    and pending_end is not None
+                    and container.type == "object"
+                    and not saw_comma_after_prev
+                ):
+                    text = byte[pending_start:pending_end].decode()
+                    if self.__loads_consume_pending_as_value_tail(
+                        owner, prev_item, prev_key, None, text
+                    ):
+                        pending_start = pending_end = None
+                saw_comma_after_prev = True
+                continue
             if not self.__loads_is_item(container, child):
                 continue
 
             # Object items use parsed keys; array items use the running index.
             key = self.__loads_pair_key(child) if container.type == "object" else index
             if pending_start is not None and pending_end is not None:
-                self.__loads_set_comment(
-                    owner, prev_key, key, byte[pending_start:pending_end].decode()
-                )
+                text = byte[pending_start:pending_end].decode()
+                self.__loads_set_comment(owner, prev_key, key, text)
                 pending_start = pending_end = None
 
-            self.__loads_collect_inner_comment(owner, child, byte)
+            if child.type == "pair":
+                for pair_child in child.children:
+                    if pair_child.type == "comment":
+                        self.__loads_collect_inner_comment(
+                            owner, child, pair_child, byte
+                        )
             # Pair nodes store the nested container under the `value` field.
             value = child.child_by_field_name("value") or child
             if value.type in ("object", "array"):
@@ -438,13 +530,17 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                     self.__loads_walk_container(child_owner, value, byte)
 
             prev_key = key
+            prev_item = child
+            saw_comma_after_prev = False
             if container.type == "array":
                 index += 1
 
         if pending_start is not None and pending_end is not None:
-            self.__loads_set_comment(
-                owner, prev_key, NONE, byte[pending_start:pending_end].decode()
-            )
+            text = byte[pending_start:pending_end].decode()
+            if not self.__loads_consume_pending_as_value_tail(
+                owner, prev_item, prev_key, None, text
+            ):
+                self.__loads_set_comment(owner, prev_key, NONE, text)
 
     def loads(self, raw: str) -> Self:
         """Bake comment layout hints from `raw` into `self.comments`, `header`, and `footer`."""
@@ -472,15 +568,222 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
     # dumps helpers
     def dumps(self, obj: Any | None = None) -> str:
-        """dumps self.mixed by _dumps"""
-        # 1. _dumps(self.data)
-        # 2. 定位data-key，然后找到对应的 Within(data-key, Any):
-        #   通过 _esc_for_regex(key) for key in self.mixed.keys() 来获得data-key的位置，然后向上&向下搜索 Within.PREFIX 与其 end_pos.
-        # 这样得到了Within的start_pos与end_pos。然后就可以将对应的 : "value..." 里面存储的原始的注释信息还原回来
+        """Serialize pure data, then restore comments into the emitted JSON text."""
         if obj is None:
-            obj = self.mixed
-        # TODO: implement this
-        return
+            obj = self.data.unref()
+        elif isinstance(obj, sdict):
+            obj = obj.unref()
+        dump_func = unpack_method(type(self).__dict__.get("_dumps"), type(self))
+        if dump_func is None:
+            raise TypeError(f"{type(self).__name__}._dumps is not callable")
+        raw = dump_func(obj)
+        if not isinstance(raw, str):
+            raise TypeError(f"{type(self)._dumps!r} must return str, got {type(raw)!r}")
+        if not (self.comments or self.header or self.footer or self.comments_flat):
+            return raw
+
+        byte = raw.encode()
+        tree: ts.Tree = self._parser.parse(byte)
+        root = tree.root_node
+        container = self.__loads_root_container(root)
+        if container is None:
+            return raw
+
+        edits: list[tuple[int, str]] = []
+        self.__dumps_plan_container(self, container, byte, edits)
+        if not edits:
+            return raw
+
+        out = raw
+        for offset, text in sorted(edits, key=lambda item: item[0], reverse=True):
+            out = out[:offset] + text + out[offset:]
+        return out
+
+    def __dumps_container_items(self, container: ts.Node) -> list[ts.Node]:
+        """Return the real item nodes for one object/array container."""
+        return [
+            child
+            for child in container.children
+            if self.__loads_is_item(container, child)
+        ]
+
+    def __dumps_item_key(self, container: ts.Node, item: ts.Node, index: int) -> Any:
+        """Resolve the logical key/index of one serialized item."""
+        if container.type == "object":
+            return self.__loads_pair_key(item)
+        return index
+
+    def __dumps_container_indent(self, byte: bytes, offset: int) -> str:
+        """Return the current line indentation at `offset`."""
+        line_start = byte.rfind(b"\n", 0, offset)
+        if line_start < 0:
+            line_start = 0
+        else:
+            line_start += 1
+        i = line_start
+        while i < len(byte) and chr(byte[i]) in (" ", "\t"):
+            i += 1
+        return byte[line_start:i].decode()
+
+    def __dumps_line_start(self, byte: bytes, offset: int) -> int:
+        """Return the byte offset of the current line start."""
+        line_start = byte.rfind(b"\n", 0, offset)
+        return 0 if line_start < 0 else line_start + 1
+
+    def __dumps_comment_text(self, comment: str, indent: str) -> str:
+        """Normalize one restored comment with the current insertion indent."""
+        return self._dumps_add_indent(comment, indent)
+
+    def __dumps_is_line_start(self, byte: bytes, offset: int) -> bool:
+        """Check whether `offset` sits at the first non-space column of its line."""
+        line_start = byte.rfind(b"\n", 0, offset)
+        if line_start < 0:
+            line_start = 0
+        else:
+            line_start += 1
+        return all(chr(ch) in (" ", "\t") for ch in byte[line_start:offset])
+
+    def __dumps_format_between_comment(
+        self, byte: bytes, offset: int, comment: str, indent: str
+    ) -> str:
+        """Format a between-item comment block around the current item indentation."""
+        text = self.__dumps_comment_text(comment, indent)
+        if self.__dumps_is_line_start(byte, offset):
+            return indent + text + "\n"
+        return "\n" + indent + text + "\n"
+
+    def __dumps_format_inline_comment(
+        self, comment: str, indent: str, *, suffix_space: bool = False
+    ) -> str:
+        """Format one inline pair-slot comment with minimal spacing."""
+        text = self.__dumps_comment_text(comment, indent)
+        if "\n" in text:
+            return " " + text + (" " if suffix_space else "")
+        return " " + text + (" " if suffix_space else "")
+
+    def __dumps_insert_comment(
+        self,
+        edits: list[tuple[int, str]],
+        byte: bytes,
+        offset: int,
+        comment: str,
+        indent: str | None = None,
+    ) -> None:
+        """Queue one text insertion if the comment is non-empty."""
+        if not comment:
+            return
+        if indent is None:
+            indent = self.__dumps_container_indent(byte, offset)
+        edits.append((offset, self.__dumps_comment_text(comment, indent)))
+
+    def __dumps_pair_slots(
+        self,
+        pair: ts.Node,
+    ) -> tuple[ts.Node, ts.Node, ts.Node | None]:
+        """Return key/colon/value nodes for one serialized pair."""
+        key, colon, value = self.__loads_pair_slots(pair)
+        return key, colon, value
+
+    def __dumps_pair_slot_comments(
+        self, owner: Self, key: Any
+    ) -> dict[_Type_kvSlot, str]:
+        """Read normalized slot comments for one object key."""
+        comment = owner.comments.get(Within(key))
+        if comment is None:
+            return {}
+        if isinstance(comment, Mapping):
+            return cast(dict[jsoncDict._Type_kvSlot, str], dict(comment))
+        return {Within(":", "v"): cast(str, comment)}
+
+    def __dumps_plan_pair_comments(
+        self,
+        owner: Self,
+        pair: ts.Node,
+        key: Any,
+        byte: bytes,
+        edits: list[tuple[int, str]],
+    ) -> None:
+        """Plan intra-pair comment insertions for one object item."""
+        slots = self.__dumps_pair_slot_comments(owner, key)
+        if not slots:
+            return
+        key_node, colon, value = self.__dumps_pair_slots(pair)
+        indent = self.__dumps_container_indent(byte, pair.start_byte)
+        if comment := slots.get(Within("k", ":")):
+            edits.append(
+                (
+                    colon.start_byte,
+                    self.__dumps_format_inline_comment(
+                        comment, indent, suffix_space=True
+                    ),
+                )
+            )
+        if comment := slots.get(Within(":", "v")):
+            target = value.start_byte if value is not None else colon.end_byte
+            edits.append(
+                (
+                    target,
+                    self.__dumps_format_inline_comment(
+                        comment, indent, suffix_space=True
+                    ),
+                )
+            )
+        if comment := slots.get(Within("v", ",")):
+            target = value.end_byte if value is not None else pair.end_byte
+            edits.append(
+                (
+                    target,
+                    self.__dumps_format_inline_comment(comment, indent),
+                )
+            )
+
+    def __dumps_plan_container(
+        self,
+        owner: Self,
+        container: ts.Node,
+        byte: bytes,
+        edits: list[tuple[int, str]],
+    ) -> None:
+        """Walk one serialized container and queue all comment restorations."""
+        items = self.__dumps_container_items(container)
+        prev_key = NONE
+
+        for index, item in enumerate(items):
+            key = self.__dumps_item_key(container, item, index)
+            if comment := owner.comments.get(Within(prev_key, key)):
+                indent = self.__dumps_container_indent(byte, item.start_byte)
+                edits.append(
+                    (
+                        self.__dumps_line_start(byte, item.start_byte),
+                        self.__dumps_format_between_comment(
+                            byte, item.start_byte, cast(str, comment), indent
+                        ),
+                    )
+                )
+            if container.type == "object":
+                self.__dumps_plan_pair_comments(owner, item, key, byte, edits)
+            value = item.child_by_field_name("value") or item
+            if value.type in ("object", "array"):
+                child_owner = owner.__children_get(key)
+                if isinstance(child_owner, jsoncDict):
+                    self.__dumps_plan_container(child_owner, value, byte, edits)
+            prev_key = key
+
+        if comment := owner.comments.get(Within(prev_key, NONE)):
+            close = container.children[-1]
+            indent = (
+                self.__dumps_container_indent(byte, items[-1].start_byte)
+                if items
+                else self.__dumps_container_indent(byte, close.start_byte)
+            )
+            edits.append(
+                (
+                    self.__dumps_line_start(byte, close.start_byte),
+                    self.__dumps_format_between_comment(
+                        byte, close.start_byte, cast(str, comment), indent
+                    ),
+                )
+            )
 
     def _dumps_add_indent(self, comment: str, indent: str) -> str:
         """add indent before comment, used in restore phase"""
