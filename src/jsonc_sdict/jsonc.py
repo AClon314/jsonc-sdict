@@ -14,6 +14,7 @@ from collections.abc import (
     Iterable,
     MutableMapping,
     Sized,
+    Iterator,
 )
 from typing import Any, Never, TypeIs, Unpack, Literal, cast, Self, overload
 
@@ -47,19 +48,20 @@ def json_dumps(obj: Any, indent: int | None = 2) -> str:
 
 
 class Within[A, B = Never](tuple[A, B]):
-    """Comment address in the mixed view.
+    """Address a comment slot in the mixed view.
 
     Shapes:
-        `Within(left, right)`: comment between two neighboring logical data items.
-        `Within(key)`: comment inside one object pair's `k:` / `:v` / `v,` slots.
+        `Within(left, right)`: comment between two neighboring logical items.
+        `Within(key)`: comment attached to one pair's internal `k:` / `:v` / `v,`
+        slots.
 
-    Boundary comments use `NONE` on one side, for example:
-        `Within(NONE, first_key)`: before the first item.
-        `Within(last_key, NONE)`: after the last item.
+    Boundary comments use `NONE` on one side:
+        `Within(NONE, first_key)`: comment before the first item.
+        `Within(last_key, NONE)`: comment after the last item.
     """
 
-    PREFIX = f"_Within_{SEED.hex}"
-    """for restore comments after dumps()"""
+    PREFIX = f"_COMMENT_{SEED.hex}"
+    """Serialization marker emitted ahead of items when `withPrefix` is enabled."""
 
     @overload
     def __new__(cls, a: A, b: B) -> Self:
@@ -77,10 +79,7 @@ class Within[A, B = Never](tuple[A, B]):
         return super().__new__(cls, ab)
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}{tuple(self)}"
-
-    def __str__(self) -> str:
-        return f'{{"{self.PREFIX}":{json.dumps(list(self))}}}'
+        return f"{type(self).__name__}{super().__repr__()}"
 
 
 def is_comment[A, B](key: Within[A, B] | Any) -> TypeIs[Within[A, B]]:
@@ -105,9 +104,9 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     ```
     """
 
-    __loads: Callable[[str], Any]
+    _loads: Callable[[str], Any]
     """callable & able to parse `.jsonc` at least, to parse raw text, eg: `hjson.loads`"""
-    __dumps: Callable[[Any], str] = json_dumps
+    _dumps: Callable[[Any], str] = json_dumps
     """same as `__loads`"""
     slash_dash = True
     """default True. if key_name starts_with `/-`, like `/-mynode` will comment the whole tree node, see [kdl](https://kdl.dev/) config style"""
@@ -122,9 +121,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         | Within[Literal[":"], Literal["v"]]
         | Within[Literal["v"], Literal[","]]
     )
-    type _Type_comments = dict[
-        K | Within[Any] | Within[Any, Any], str | dict[_Type_kvSlot, str]
-    ]
+    type _Type_comments = dict[K | Within, str | dict[_Type_kvSlot, str]]
 
     @classmethod
     def config(
@@ -136,9 +133,9 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         auto_indent: bool | UNSET = UNSET,
     ) -> None:
         if loads is not UNSET:
-            cls.__loads = loads
+            cls._loads = loads
         if dumps is not UNSET:
-            cls.__dumps = dumps
+            cls._dumps = dumps
         if slash_dash is not UNSET:
             cls.slash_dash = slash_dash
         if auto_indent is not UNSET:
@@ -171,9 +168,9 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         is_raw_str = isinstance(data, str)
         comments = {}
         if is_raw_str:
-            if cls.__loads is None:
+            if cls._loads is None:
                 raise ValueError("missing arg `loads` when `raw` is str")
-            obj = cls.__loads(data)
+            obj = cls._loads(data)
         else:
             obj = data
             if isinstance(data, Mapping):
@@ -226,8 +223,15 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         node.children = children if children else {}
         return node
 
+    @staticmethod
+    def is_keypath(key: Any) -> TypeIs[Sequence]:
+        return isinstance(key, Sequence) and not isinstance(
+            key, (str, bytes, bytearray, Within)
+        )
+
     # mixed view helpers
-    def split_mixed(self, mapping: Mapping) -> tuple[OrderedDict, _Type_comments]:
+    @classmethod
+    def split_mixed(cls, mapping: Mapping) -> tuple[OrderedDict, _Type_comments]:
         """Split a mixed mapping into pure data and comment metadata.
 
         The input may contain normal data keys, `Within(...)` comment keys, or nested mixed
@@ -245,7 +249,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 data_out[key] = value
                 continue
 
-            child_data, child_comments, comment_only = self.__mixed_split_child_mapping(
+            child_data, child_comments, comment_only = cls._split_mixed_child_mapping(
                 value
             )
             if comment_only:
@@ -256,11 +260,12 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
         return data_out, comments_out
 
-    def __mixed_split_child_mapping(
-        self, value: Mapping[Any, Any]
+    @classmethod
+    def _split_mixed_child_mapping(
+        cls, value: Mapping[Any, Any]
     ) -> tuple[OrderedDict, _Type_comments, bool]:
         """Split a nested mixed mapping into child data/comments and detect comment-only nodes."""
-        child_data, child_comments = self.split_mixed(value)
+        child_data, child_comments = cls.split_mixed(value)
         comment_only = (
             bool(child_comments)
             and not child_data
@@ -282,7 +287,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             data_value = self.data[key]
             if not isinstance(data_value, sdict):
                 continue
-            _, child_comments, comment_only = self.__mixed_split_child_mapping(value)
+            _, child_comments, comment_only = self._split_mixed_child_mapping(value)
             if comment_only:
                 continue
             child = self.Proxy(data_value, comments=child_comments)
@@ -310,12 +315,6 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             if child is not None and child.data is value:
                 current[key] = child
         self.children = current
-
-    @staticmethod
-    def _is_keypath(key: Any) -> TypeIs[Sequence]:
-        return isinstance(key, Sequence) and not isinstance(
-            key, (str, bytes, bytearray, Within)
-        )
 
     def __children_get(self, key: Any):
         """Return the mixed-view child proxy for `key`, creating it lazily when needed."""
@@ -473,15 +472,11 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
     # dumps helpers
     def dumps(self, obj: Any | None = None) -> str:
-        """dumps self.mixed by __dumps"""
-        # 1. 将Within转为json能接受的str (如何设计???), 带前缀以区别data/comment key( _COMMENT = f"_COMMENT_{uuid4().hex}:" ), 如"_COMMENT_...:[\"dataKeyA\",\"dataKeyB\"]"
-        # 2. __dumps()
-        # 3. 分歧点
-        # 3.1 直接定位comment-key: 通过 .startswith(Within._COMMENT) 来定位comment-key，然后使用 __DUMPS_STOP = regex.compile('[^\\]"') 类似的来寻找key的结尾。
-        # 3.2 先定位data-key，然后上下文搜索找到 comment-key:
-        #   通过 _esc_for_regex(key) for key in self.mixed.keys() 来获得data-key的位置，然后向上&向下搜索 Within._COMMENT 与 comment-key的 end_pos.
-        #   由于data-key在同一层dict里是唯一的，所以可以直接让comment-key变得更短?
-        # 这样得到了key的start_pos与end_pos。然后就可以将对应的 : "value..." 里面存储的原始的
+        """dumps self.mixed by _dumps"""
+        # 1. _dumps(self.data)
+        # 2. 定位data-key，然后找到对应的 Within(data-key, Any):
+        #   通过 _esc_for_regex(key) for key in self.mixed.keys() 来获得data-key的位置，然后向上&向下搜索 Within.PREFIX 与其 end_pos.
+        # 这样得到了Within的start_pos与end_pos。然后就可以将对应的 : "value..." 里面存储的原始的注释信息还原回来
         if obj is None:
             obj = self.mixed
         # TODO: implement this
@@ -499,7 +494,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         return OrderedDict(self.items())
 
     @property
-    def comments_flat(self) -> dict[tuple, jsoncDict._Type_comments]:
+    def comments_flat(self) -> dict[tuple, _Type_comments]:
         """Flatten nested `comments` dicts by `self.data.keypath`.
 
         Example:
@@ -544,18 +539,93 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         if comment is not None:
             yield Within(prev_key, NONE), comment
 
+    def comments_get(
+        self, key: Within, default: Any = UNSET
+    ) -> str | dict[_Type_kvSlot, str] | dict[Within, Any] | Any:
+        """Query comment metadata by exact key, wildcard, or item-neighborhood.
+
+        Query forms:
+            `Within(a, b)`: exact comment lookup.
+            `Within(a, Any)`: all two-sided comments whose left side is `a`.
+            `Within(Any, b)`: all two-sided comments whose right side is `b`.
+            `Within(a)`: exact single-item slot lookup.
+            `Within(Any)`: all single-item slot comments.
+            `Within(..., key)`: contiguous comment items immediately before `key`.
+            `Within(key, ...)`: contiguous comment items immediately after `key`.
+        """
+        if not is_comment(key):
+            raise TypeError(f"{key=} should be Within(...)")
+
+        parts = tuple(key)
+        if ... in parts:
+            items = list(self.items())
+            data_index = next(
+                (
+                    i
+                    for i, (item_key, _) in enumerate(items)
+                    if item_key
+                    == parts[0 if len(parts) == 1 or parts[0] is not ... else 1]
+                ),
+                None,
+            )
+            if data_index is None:
+                if default is not UNSET:
+                    return default
+                raise KeyError(key)
+
+            out: dict[Within, Any] = {}
+            if len(parts) == 2 and parts[0] is ...:
+                i = data_index - 1
+                while i >= 0 and is_comment(items[i][0]):
+                    item_key, value = items[i]
+                    out[cast(Within, item_key)] = value
+                    i -= 1
+                return dict(reversed(tuple(out.items())))
+
+            i = data_index + 1
+            while i < len(items) and is_comment(items[i][0]):
+                item_key, value = items[i]
+                out[cast(Within, item_key)] = value
+                i += 1
+            return out
+
+        if Any in parts:
+            out: dict[Within, Any] = {}
+            for comment_key, value in self.comments.items():
+                if not is_comment(comment_key):
+                    continue
+                comment_parts = tuple(comment_key)
+                if len(comment_parts) != len(parts):
+                    continue
+                if all(
+                    part is Any or part == comment_part
+                    for part, comment_part in zip(parts, comment_parts)
+                ):
+                    out[comment_key] = value
+            return out
+
+        if key in self.comments:
+            return self.comments[key]
+        if default is not UNSET:
+            return default
+        raise KeyError(key)
+
     def keys(self) -> Iterable[K | Within]:  # type: ignore
         for key, _ in self.items():
             yield key
 
+    def values(self) -> Iterable[V]:  # type: ignore
+        for _, value in self.items():
+            yield value
+
     def __getitem__(self, key):
-        if self._is_keypath(key):
+        if self.is_keypath(key):
             value = self
             for part in key:
                 value = value[part]
             return value
-        if key in self.comments and not is_comment(key):
-            raise KeyError(key)
+        if is_comment(key):
+            return self.comments_get(key)
         # Mixed lookup walks comments and data in the same exported iteration order.
         for item_key, value in self.items():
             if item_key == key:
@@ -566,7 +636,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         if is_comment(key):
             self.comments[key] = value
             return
-        if self._is_keypath(key):
+        if self.is_keypath(key):
             keys = tuple(key)
             if not keys:
                 raise KeyError(key)
@@ -580,7 +650,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         if is_comment(key):
             del self.comments[key]
             return
-        if self._is_keypath(key):
+        if self.is_keypath(key):
             keys = tuple(key)
             if not keys:
                 raise KeyError(key)
@@ -713,3 +783,6 @@ class CompactJSONEncoder(json.JSONEncoder):
             raise ValueError(
                 f"indent must either be of type int or str (is: {type(self.indent)})"
             )
+
+
+# print(json.dumps({Within(None, 1): 1}))

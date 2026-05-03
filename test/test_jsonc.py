@@ -1,6 +1,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import hjson
 import pytest
@@ -142,6 +143,53 @@ def test_init_auto_splits_nested_mixed_mapping():
     assert node.data["x"] == 1
     assert node.comments[Within("x")] == "/*c*/"
     assert list(node.items()) == [("x", 1), (Within("x"), "/*c*/")]
+
+
+def test_comments_get_supports_any_wildcard():
+    jd = jsoncDict(
+        {
+            Within(NONE, "a"): "// before a",
+            "a": 1,
+            Within("a", "b"): "// between a and b",
+            "b": 2,
+            Within("a"): "/* slot a */",
+            Within("b", NONE): "// after b",
+        }
+    )
+
+    assert jd.comments_get(Within("a", Any)) == {
+        Within("a", "b"): "// between a and b",
+    }
+    assert jd.comments_get(Within(Any, "b")) == {
+        Within("a", "b"): "// between a and b",
+    }
+    assert jd.comments_get(Within(Any)) == {
+        Within("a"): "/* slot a */",
+    }
+
+
+def test_comments_get_supports_ellipsis_neighbors():
+    jd = jsoncDict(
+        {
+            Within(NONE, "a"): "// before a",
+            "a": 1,
+            Within("a", "b"): "// between a and b",
+            "b": 2,
+            Within("b"): "/* slot b */",
+            Within("b", NONE): "// after b",
+        }
+    )
+
+    assert jd.comments_get(Within("a", ...)) == {
+        Within("a", "b"): "// between a and b",
+    }
+    assert jd.comments_get(Within("b", ...)) == {
+        Within("b"): "/* slot b */",
+        Within("b", NONE): "// after b",
+    }
+    assert jd.comments_get(Within(..., "b")) == {
+        Within("a", "b"): "// between a and b",
+    }
 
 
 def test_jsoncdict_missing_class_loads_raises_value_error():
