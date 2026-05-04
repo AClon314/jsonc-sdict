@@ -1,6 +1,6 @@
 #!/bin/env python
 # PYTHON_ARGCOMPLETE_OK
-"""merge json/dict & custom solver (from pip's jsonc_sdict)"""
+"""Merge helpers and CLI support for nested mapping/list-like structures."""
 
 import importlib.util
 from argparse import ArgumentParser, Namespace

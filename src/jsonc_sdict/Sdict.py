@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""super dict, signal dict."""
+"""Ordered nested mapping helpers used by `jsoncDict` and merge flows."""
 
 import re
 from weakref import ref, WeakKeyDictionary, WeakValueDictionary

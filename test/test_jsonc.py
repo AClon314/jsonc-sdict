@@ -94,13 +94,27 @@ def test_jsoncdict_recurses_into_nested_jsoncdict():
 
 def test_hidden_key_uses_comments_runtime_marker():
     jd = jsoncDict({"keep": 1, "hide": 2, "tail": 3})
-    jd.comments["hide"] = ""
+    jd.comments["hide"] = {"reason": "runtime hidden"}
 
     assert list(jd.items()) == [("keep", 1), ("tail", 3)]
     assert list(jd) == ["keep", "tail"]
     assert len(jd) == 2
     with pytest.raises(KeyError):
         jd["hide"]
+
+
+def test_len_matches_materialized_items_for_visible_mixed_view():
+    jd = jsoncDict({Within(None, "a"): "// dangling", "a": 1, Within("a"): "/*c*/"})
+
+    assert list(jd.items()) == [("a", 1), (Within("a"), "/*c*/")]
+    assert len(jd) == len(list(jd.items()))
+
+
+def test_repr_uses_visible_mixed_view():
+    jd = jsoncDict({Within(NONE, "a"): "// head", "a": 1, Within("a"): "/*c*/"})
+
+    assert repr(jsoncDict({})) == "jsoncDict()"
+    assert repr(jd) == "jsoncDict({Within(NONE, 'a'): '// head', 'a': 1, Within('a',): '/*c*/'})"
 
 
 def test_mixed_only_skips_hidden_keys_on_that_child_depth():
@@ -112,7 +126,7 @@ def test_mixed_only_skips_hidden_keys_on_that_child_depth():
     )
 
     node = jc["node"]
-    node.comments["hide"] = ""
+    node.comments["hide"] = {"reason": "runtime hidden"}
 
     assert list(jc.mixed.keys()) == ["node", "tail"]
     assert list(node.mixed.keys()) == ["keep"]

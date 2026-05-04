@@ -1,6 +1,25 @@
 #!/bin/env python3
-"""
+"""Round-trip JSONC/HJSON editing with dict-like APIs.
+
+Quick usage:
+```python
+import hjson
+from jsonc_sdict import jsoncDict, Within, NONE
+
+jc = jsoncDict('{"a": 1}', loads=hjson.loads, dumps=hjson.dumps)
+jc["a"] = 2
+jc[Within(NONE, "a")] = "// before a"
+print(jc.full)
 ```
+
+Advanced usage:
+```python
+jc[Within("a")] = {
+    Within("k", ":"): "/* key slot */",
+    Within(":", "v"): "/* value slot */",
+    Within("v", ","): "/* tail slot */",
+}
+print(jc.full)
 ```
 """
 
@@ -35,12 +54,16 @@ Log = getLogger(__name__)
 _Type_BeforeSep = Literal["", "\n", ",", "k", ":", "v"]
 """k : v , \n"""
 before_seps = args_of_type(_Type_BeforeSep)
-def json_dumps(obj: Any, indent: int | None = 2) -> str:
-    return json.dumps(obj, ensure_ascii=False, indent=indent, cls=CompactJSONEncoder)
 
 
-class Within[A, B = Never](tuple[A, B]):
-    """Address a comment slot in the mixed view.
+def json_dumps(obj: Any, indent: int | None = 2, **kw) -> str:
+    kwargs = dict(ensure_ascii=False, indent=indent, cls=CompactJSONEncoder)
+    kwargs.update(kw)
+    return json.dumps(obj, **kwargs)  # type: ignore
+
+
+class Within[A, B](tuple[A, B]):
+    """Address a **comment** slot in the mixed view.
 
     Shapes:
         `Within(left, right)`: comment between two neighboring logical items.
@@ -182,11 +205,11 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         {
             Within(NONE, dataKeyA): "// before first item",
             Within(dataKeyA, dataKeyB): "  // between comment\\n ...",
-            dataKeyB: "",  # runtime hidden
+            dataKeyB: "",  # runtime hidden; presence in `comments` means hidden
             Within(dataKeyC): {
-                Within("k",":"): " /* 神人: */ // aaaa",
-                Within(":","v"): " /* 神人v */ ",
-                Within("v",","): " /* 神人, */ "
+                Within("k",":"): " /* key slot */",
+                Within(":","v"): " /* value slot */ ",
+                Within("v",","): " /* tail slot, */ "
             },
             Within(dataKeyD, NONE): "// after last item"
         }
@@ -284,13 +307,6 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             children[key] = child
         return children
 
-    def __children_iter(self) -> Iterable[tuple[Any, Self]]:
-        """Yield `(key, child)` pairs for nested `sdict` values as `jsoncDict` proxies."""
-        for key, _ in self.__data_items():
-            child = self.__children_get(key)
-            if isinstance(child, jsoncDict):
-                yield key, child
-
     def __children_sync(self) -> None:
         """Drop stale child proxies and rebind preserved ones after `self.data` mutations."""
         current: dict[Any, Self] = {}
@@ -351,26 +367,18 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 return content.text.decode()
         raise ValueError(f"unsupported json object key node: {node}")
 
-    def __slash_dash_key(self, key: Any) -> str | None:
+    def _slash_dash_key(self, key: Any) -> str | None:
         """Return the logical key behind one `/-name` marker key."""
         if type(self).slash_dash and isinstance(key, str) and key.startswith("/-"):
             return key[2:]
         return None
 
-    def __is_hidden_key(self, owner: Self, key: Any) -> bool:
-        """Runtime-only hidden keys are tracked by an empty-string marker."""
-        return owner.comments.get(key, UNSET) == ""
-
-    def __has_data_key_marker(self, owner: Self, key: Any) -> bool:
-        """Any non-Within comment key that also names a data item is a data-key marker."""
-        return key in owner.comments and not is_comment(key)
-
     def __key_from_serialized(self, owner: Self, key: Any) -> Any:
         """Map one serialized object key back to the logical key stored in `owner.data`."""
-        logical = self.__slash_dash_key(key)
+        logical = self._slash_dash_key(key)
         if logical is None:
             return key
-        if logical in owner.data and self.__has_data_key_marker(owner, logical):
+        if logical in owner.data and logical in owner.comments:
             return logical
         return key
 
@@ -379,7 +387,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         raw = owner.data.v
         if isinstance(raw, Mapping):
             for key in list(raw.keys()):
-                logical = self.__slash_dash_key(key)
+                logical = self._slash_dash_key(key)
                 if logical is None or logical in raw:
                     continue
                 owner.data.rename_key(key, logical, deep=False)
@@ -401,13 +409,6 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         if not node.is_named or node.type == "comment":
             return False
         return node.type == "pair" if container.type == "object" else True
-
-    def __loads_set_comment(
-        self, owner: Self, key_a: Any, key_b: Any, text: str
-    ) -> None:
-        """Store a non-empty comment span between two logical item positions."""
-        if text:
-            owner.comments[Within(key_a, key_b)] = text
 
     def __loads_reset_comments(self, owner: Self) -> None:
         """Clear parsed comment metadata recursively before a fresh `loads()` pass."""
@@ -439,17 +440,6 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             raise ValueError(f"unsupported json object pair node: {node}")
         return key, colon, value
 
-    def __loads_slot_put(
-        self,
-        slots: dict[_Type_kvSlot, str],
-        slot: _Type_kvSlot,
-        text: str,
-    ) -> None:
-        """Append parsed text into one pair slot while preserving lexical order."""
-        if not text:
-            return
-        slots[slot] = slots.get(slot, "") + text
-
     def __loads_collect_pair_comment(
         self,
         owner: Self,
@@ -468,7 +458,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         else:
             # Backward-compat for legacy runtime state that still stores a raw string.
             slots = {Within(":", "v"): cast(str, current)}
-        self.__loads_slot_put(slots, slot, text)
+        slots[slot] = slots.get(slot, "") + text
         owner.comments[Within(key)] = slots
 
     def __loads_collect_inner_comment(
@@ -564,7 +554,8 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             )
             if pending_start is not None and pending_end is not None:
                 text = byte[pending_start:pending_end].decode()
-                self.__loads_set_comment(owner, prev_key, key, text)
+                if text:
+                    owner.comments[Within(prev_key, key)] = text
                 pending_start = pending_end = None
 
             if child.type == "pair":
@@ -591,7 +582,8 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             if not self.__loads_consume_pending_as_value_tail(
                 owner, prev_item, prev_key, None, text
             ):
-                self.__loads_set_comment(owner, prev_key, NONE, text)
+                if text:
+                    owner.comments[Within(prev_key, NONE)] = text
 
     def loads(self, raw: str) -> Self:
         """Bake comment layout hints from `raw` into `self.comments`, `header`, and `footer`."""
@@ -651,22 +643,6 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             out = out[:offset] + text + out[offset:]
         return out
 
-    def __dumps_container_items(self, container: ts.Node) -> list[ts.Node]:
-        """Return the real item nodes for one object/array container."""
-        return [
-            child
-            for child in container.children
-            if self.__loads_is_item(container, child)
-        ]
-
-    def __dumps_item_key(
-        self, owner: Self, container: ts.Node, item: ts.Node, index: int
-    ) -> Any:
-        """Resolve the logical key/index of one serialized item."""
-        if container.type == "object":
-            return self.__key_from_serialized(owner, self.__loads_pair_key(item))
-        return index
-
     def __dumps_export_value(self, owner: Self | None, value: Any) -> Any:
         """Build a dump-ready plain object, applying slash-dash markers from comments."""
         if isinstance(value, jsoncDict):
@@ -680,7 +656,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 export_key = key
                 child_owner = None
                 if owner is not None:
-                    if self.__is_hidden_key(owner, key) and iterable(item):
+                    if key in owner.comments and iterable(item):
                         if not type(self).slash_dash or not isinstance(key, str):
                             raise _TODO
                         export_key = f"/-{key}"
@@ -753,29 +729,6 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             return " " + text + (" " if suffix_space else "")
         return " " + text + (" " if suffix_space else "")
 
-    def __dumps_insert_comment(
-        self,
-        edits: list[tuple[int, str]],
-        byte: bytes,
-        offset: int,
-        comment: str,
-        indent: str | None = None,
-    ) -> None:
-        """Queue one text insertion if the comment is non-empty."""
-        if not comment:
-            return
-        if indent is None:
-            indent = self.__dumps_container_indent(byte, offset)
-        edits.append((offset, self._dumps_add_indent(comment, indent)))
-
-    def __dumps_pair_slots(
-        self,
-        pair: ts.Node,
-    ) -> tuple[ts.Node, ts.Node, ts.Node | None]:
-        """Return key/colon/value nodes for one serialized pair."""
-        key, colon, value = self.__loads_pair_slots(pair)
-        return key, colon, value
-
     def __dumps_pair_slot_comments(
         self, owner: Self, key: Any
     ) -> dict[_Type_kvSlot, str]:
@@ -799,7 +752,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         slots = self.__dumps_pair_slot_comments(owner, key)
         if not slots:
             return
-        key_node, colon, value = self.__dumps_pair_slots(pair)
+        _, colon, value = self.__loads_pair_slots(pair)
         indent = self.__dumps_container_indent(byte, pair.start_byte)
         if comment := slots.get(Within("k", ":")):
             edits.append(
@@ -837,11 +790,19 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         edits: list[tuple[int, str]],
     ) -> None:
         """Walk one serialized container and queue all comment restorations."""
-        items = self.__dumps_container_items(container)
+        items = [
+            child
+            for child in container.children
+            if self.__loads_is_item(container, child)
+        ]
         prev_key = NONE
 
         for index, item in enumerate(items):
-            key = self.__dumps_item_key(owner, container, item, index)
+            key = (
+                self.__key_from_serialized(owner, self.__loads_pair_key(item))
+                if container.type == "object"
+                else index
+            )
             if comment := owner.comments.get(Within(prev_key, key)):
                 indent = self.__dumps_container_indent(byte, item.start_byte)
                 edits.append(
@@ -900,39 +861,13 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         def collect(node: Self) -> None:
             if node.comments:
                 out[node.data.keypath] = dict(node.comments)
-            for _, child in node.__children_iter():
-                collect(child)
+            for key, _ in node.__data_items():
+                child = node.__children_get(key)
+                if isinstance(child, jsoncDict):
+                    collect(child)
 
         collect(self)
         return out
-
-    def items(self) -> Iterable[tuple[K | Within, V | str | dict]]:  # type: ignore
-        """Iterate the exported mixed view in display order.
-
-        Yields:
-            `Within(left, right), str` for between-item comments.
-            `key, value` for visible data items.
-            `Within(key), dict[_Type_kvSlot, str] | str` for single-item slot comments.
-            `Within(last_key, NONE), str` for trailing comments.
-        """
-        prev_key = NONE
-
-        for key, _ in self.__data_items():
-            comment = self.comments.get(Within(prev_key, key))
-            if comment is not None:
-                yield Within(prev_key, key), comment
-            if self.__is_hidden_key(self, key):
-                prev_key = key
-                continue
-            yield key, self.__children_get(key)
-            comment = self.comments.get(Within(key))
-            if comment is not None:
-                yield Within(key), comment
-            prev_key = key
-
-        comment = self.comments.get(Within(prev_key, NONE))
-        if comment is not None:
-            yield Within(prev_key, NONE), comment
 
     def comments_get(
         self, key: Within, default: Any = UNSET
@@ -1005,6 +940,34 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             return default
         raise KeyError(key)
 
+    def items(self) -> Iterable[tuple[K | Within, V | str | dict]]:  # type: ignore
+        """Iterate the exported mixed view in display order.
+
+        Yields:
+            `Within(left, right), str` for between-item comments.
+            `key, value` for visible data items.
+            `Within(key), dict[_Type_kvSlot, str] | str` for single-item slot comments.
+            `Within(last_key, NONE), str` for trailing comments.
+        """
+        prev_key = NONE
+
+        for key, _ in self.__data_items():
+            comment = self.comments.get(Within(prev_key, key))
+            if comment is not None:
+                yield Within(prev_key, key), comment
+            if key in self.comments:
+                prev_key = key
+                continue
+            yield key, self.__children_get(key)
+            comment = self.comments.get(Within(key))
+            if comment is not None:
+                yield Within(key), comment
+            prev_key = key
+
+        comment = self.comments.get(Within(prev_key, NONE))
+        if comment is not None:
+            yield Within(prev_key, NONE), comment
+
     def keys(self) -> Iterable[K | Within]:  # type: ignore
         for key, _ in self.items():
             yield key
@@ -1062,7 +1025,27 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         return iter(self.keys())
 
     def __len__(self) -> int:
-        return sum(1 for _ in self.items())
+        count = 0
+        prev_key = NONE
+        for key, _ in self.__data_items():
+            if Within(prev_key, key) in self.comments:
+                count += 1
+            if key in self.comments:
+                prev_key = key
+                continue
+            count += 1
+            if Within(key) in self.comments:
+                count += 1
+            prev_key = key
+        if Within(prev_key, NONE) in self.comments:
+            count += 1
+        return count
+
+    def __repr__(self) -> str:
+        r = repr(self.mixed)
+        if r.startswith("OrderedDict("):
+            r = r[len("OrderedDict(") : -1]
+        return f"{type(self).__name__}({r})"
 
     @property
     def body(self) -> str:
@@ -1178,6 +1161,3 @@ class CompactJSONEncoder(json.JSONEncoder):
             raise ValueError(
                 f"indent must either be of type int or str (is: {type(self.indent)})"
             )
-
-
-# print(json.dumps({Within(None, 1): 1}))

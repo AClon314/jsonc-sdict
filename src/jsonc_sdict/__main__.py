@@ -1,6 +1,6 @@
 #!/bin/env python
 # PYTHON_ARGCOMPLETE_OK
-"""jsonc_sdict module entrypoint"""
+"""Command-line entrypoint for `python -m jsonc_sdict`."""
 
 import sys
 from argparse import ArgumentParser

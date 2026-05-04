@@ -34,7 +34,27 @@ For local development:
 pip install -e ".[dev]"
 ```
 
-### Quick start
+### Quick usage
+
+```python
+import hjson
+from jsonc_sdict import jsoncDict, Within, NONE
+
+raw = """
+{
+  "a": 1,
+  "b": 2
+}
+""".strip()
+
+jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
+jc["b"] = 3
+jc[Within(NONE, "a")] = "// inserted before a"
+
+print(jc.full)
+```
+
+### Advanced usage
 
 ```python
 import hjson
@@ -47,17 +67,16 @@ raw = """
   "b": 2
 }
 // footer
-"""
+""".strip()
 
 jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
-jc.comments[Within(NONE, "a")] = "// before a"
-jc.comments[Within("a")] = {
+jc[Within(NONE, "a")] = "// before a"
+jc[Within("a")] = {
     Within("k", ":"): "/* key slot */",
     Within(":", "v"): "/* value slot */",
     Within("v", ","): "/* tail slot */",
 }
 
-print(jc.body)
 print(jc.full)
 ```
 

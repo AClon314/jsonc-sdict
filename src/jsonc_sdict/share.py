@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""shared static public lib"""
+"""Shared sentinels, typing helpers, logging, and small utility functions."""
 
 import re
 import os

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""wrapper of Weak(Key/Value)Dictionary"""
+"""Weak-reference ordered containers used by the nested data model."""
 
 import sys
 from weakref import WeakKeyDictionary, WeakValueDictionary
