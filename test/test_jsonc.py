@@ -120,6 +120,14 @@ def test_repr_uses_visible_mixed_view():
     assert repr(jd) == "jsoncDict({Within(NONE, 'a'): '// head', 'a': 1, Within('a',): '/*c*/'})"
 
 
+def test_within_only_equals_within():
+    assert Within("a", "b") == Within("a", "b")
+    assert Within("a") == Within("a")
+    assert Within("a", "b") != ("a", "b")
+    assert Within("a") != ("a",)
+    assert hash(Within("a", "b")) == hash(Within("a", "b"))
+
+
 def test_mixed_only_skips_hidden_keys_on_that_child_depth():
     jc = jsoncDict(
         {
@@ -280,7 +288,7 @@ def test_children_resync_after_data_key_rename():
     jd.data.rename_key("list", "items")
 
     assert jd.mixed()["items"] is child
-    assert child.comments[(0, 1)] == "// 1,"
+    assert child.comments[Within(0, 1)] == "// 1,"
 
 
 def test_jsonc_body_restore():

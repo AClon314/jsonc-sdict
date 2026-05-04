@@ -94,6 +94,15 @@ class Within[A, B](tuple[A, B]):
     def __repr__(self) -> str:
         return f"{type(self).__name__}{super().__repr__()}"
 
+    def __eq__(self, obj) -> bool:
+        return isinstance(obj, type(self)) and super().__eq__(obj)
+
+    def __ne__(self, obj) -> bool:
+        return not self.__eq__(obj)
+
+    def __hash__(self) -> int:
+        return super().__hash__()
+
 
 def is_comment[A, B](key: Within[A, B] | Any) -> TypeIs[Within[A, B]]:
     return isinstance(key, Within)
@@ -287,12 +296,12 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         )
         return child_data, child_comments, comment_only
 
-    def merge(self, mixed: Mapping, **kw):
+    def merge(self, mixed: Mapping, **kw: Unpack[_merge.Kwargs]):
         data_only = {k: v for k, v in mixed.items() if not is_comment(k)}
         comment_only = {k: v for k, v in mixed.items() if is_comment(k)}
         self.data.merge(data_only, **kw)
         # TODO: solve comment conflict?
-        self.comments = _merge((self.comments, comment_only))()
+        self.comments = _merge((self.comments, comment_only), **kw)()
 
     # child proxy helpers
     def __children_build(self, mapping: Mapping[Any, Any]) -> dict[Any, Self]:
@@ -346,9 +355,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
     def __data_items(self) -> Iterable[tuple[Any, Any]]:
         """Iterate pure data items in storage order, excluding synthetic comment entries."""
-        get_child = unpack_method(
-            getattr(type(self.data), "getChild", None), type(self.data)
-        )
+        get_child = unpack_method(getattr(type(self.data), "getChild"), type(self.data))
         if get_child is None:
             get_child = self.data.getChild
         return get_child(self.data, self.data.v)
@@ -621,36 +628,44 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         return self
 
     # dumps helpers
-    def dumps(self, obj: Any | None = None) -> str:
+    def dumps(self, obj: Any | None = None, auto_indent: bool | None = None) -> str:
         """Serialize pure data, then restore comments into the emitted JSON text."""
-        if obj is None:
-            obj = self.__dumps_export_value(self, self.data)
-        else:
-            obj = self.__dumps_export_value(self, obj)
-        dump_func = unpack_method(type(self).__dict__.get("_dumps"), type(self))
-        if dump_func is None:
-            raise TypeError(f"{type(self).__name__}._dumps is not callable")
-        raw = dump_func(obj)
-        if not isinstance(raw, str):
-            raise TypeError(f"{type(self)._dumps!r} must return str, got {type(raw)!r}")
-        if not (self.comments or self.header or self.footer or self.comments_flat):
-            return raw
+        cls = type(self)
+        if auto_indent is not None:
+            old_auto_indent = cls.auto_indent
+            cls.auto_indent = auto_indent
+        try:
+            if obj is None:
+                obj = self.__dumps_export_value(self, self.data)
+            else:
+                obj = self.__dumps_export_value(self, obj)
+            dump_func = unpack_method(getattr(cls, "_dumps"), cls)
+            if dump_func is None:
+                raise TypeError(f"{cls.__name__}._dumps is not callable")
+            raw = dump_func(obj)
+            if not isinstance(raw, str):
+                raise TypeError(f"{cls._dumps!r} must return str, got {type(raw)!r}")
+            if not (self.comments or self.header or self.footer or self.comments_flat):
+                return raw
 
-        byte = raw.encode()
-        tree: ts.Tree = self._parser.parse(byte)
-        root = tree.root_node
-        container = self.__loads_root_container(root)
-        if container is None:
-            return raw
+            byte = raw.encode()
+            tree: ts.Tree = self._parser.parse(byte)
+            root = tree.root_node
+            container = self.__loads_root_container(root)
+            if container is None:
+                return raw
 
-        edits: list[tuple[int, str]] = []
-        self.__dumps_plan_container(self, container, byte, edits)
-        if not edits:
-            return raw
+            edits: list[tuple[int, str]] = []
+            self.__dumps_plan_container(self, container, byte, edits)
+            if not edits:
+                return raw
 
-        out = raw
-        for offset, text in sorted(edits, key=lambda item: item[0], reverse=True):
-            out = out[:offset] + text + out[offset:]
+            out = raw
+            for offset, text in sorted(edits, key=lambda item: item[0], reverse=True):
+                out = out[:offset] + text + out[offset:]
+        finally:
+            if auto_indent is not None:
+                cls.auto_indent = old_auto_indent
         return out
 
     def __dumps_export_value(self, owner: Self | None, value: Any) -> Any:
@@ -858,7 +873,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         """Return runtime-hidden data keys stored in `comments` at the current depth."""
         return {key for key in self.comments if not is_comment(key)}
 
-    def mixed(self, comments: bool = True) -> OrderedDict[Any, Any] | list[Any]:
+    def mixed(self, comments: bool = True) -> OrderedDict[Any, Any]:
         """Materialize the current view.
 
         `comments=True` keeps `Within(...)` items.
