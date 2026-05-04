@@ -7,6 +7,7 @@ import hjson
 import pytest
 
 from jsonc_sdict import NONE, UNSET
+from jsonc_sdict.share import _TODO
 from jsonc_sdict.jsonc import Within, hjsonDict, is_comment, jsoncDict
 
 Log = logging.getLogger()
@@ -28,7 +29,9 @@ def make_hjson(raw, **kwargs):
 
 def test_init():
     In = Path("test/old.jsonc")
-    jd = jsoncDict(In.read_text("utf-8"), loads=hjson.loads, dumps=json_dumps)
+    jd = jsoncDict(
+        In.read_text("utf-8"), loads=hjson.loads, dumps=json_dumps, slash_dash=False
+    )
     Log.debug(f"{jd.comments=}")
     Log.debug(f"{jd.comments_flat=}")
     Log.debug(f"{jd.mixed=}")
@@ -38,7 +41,7 @@ def test_init():
 
 def test_loads_collects_header_footer_and_comments():
     raw = Path("test/old.jsonc").read_text("utf-8")
-    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps)
+    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps, slash_dash=False)
     ls = jd["list"]
 
     assert jd.header.startswith("/** aclon314 {} */")
@@ -52,7 +55,7 @@ def test_loads_collects_header_footer_and_comments():
 
 def test_comments_collects_nested_comment_maps():
     raw = Path("test/old.jsonc").read_text("utf-8")
-    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps)
+    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps, slash_dash=False)
 
     comments = jd.comments_flat
 
@@ -64,7 +67,7 @@ def test_comments_collects_nested_comment_maps():
 
 def test_jsoncdict_preserves_current_depth_order():
     raw = Path("test/old.jsonc").read_text("utf-8")
-    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps)
+    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps, slash_dash=False)
 
     items = list(jd.items())
 
@@ -79,7 +82,7 @@ def test_jsoncdict_preserves_current_depth_order():
 
 def test_jsoncdict_recurses_into_nested_jsoncdict():
     raw = Path("test/old.jsonc").read_text("utf-8")
-    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps)
+    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps, slash_dash=False)
 
     mixed_list = jd.mixed["list"]
 
@@ -209,7 +212,7 @@ def test_subclass_class_config_is_not_reset_by_init_defaults():
 
 def test_children_resync_after_data_key_rename():
     raw = Path("test/old.jsonc").read_text("utf-8")
-    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps)
+    jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps, slash_dash=False)
     child = jd.mixed["list"]
 
     jd.data.rename_key("list", "items")
@@ -221,6 +224,47 @@ def test_children_resync_after_data_key_rename():
 def test_jsonc_body_restore():
     jc = make_jsonc({"a": 1})
     assert '"a": 1' in jc.body
+
+
+def test_loads_normalizes_slash_dash_key_without_conflict():
+    raw = '{\n  "/-node": {\n    "x": 1\n  }\n}'
+    jc = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps, slash_dash=True)
+
+    assert "node" in jc.data
+    assert "/-node" not in jc.data
+    assert "node" in jc.comments
+    assert jc.data["node"]["x"] == 1
+    with pytest.raises(KeyError):
+        jc["node"]
+
+
+def test_loads_keeps_slash_dash_key_when_logical_key_conflicts():
+    raw = '{\n  "/-node": 1,\n  "node": 2\n}'
+    jc = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps, slash_dash=True)
+
+    assert "/-node" in jc.data
+    assert "node" in jc.data
+    assert "node" not in jc.comments
+    assert jc["/-node"] == 1
+    assert jc["node"] == 2
+
+
+def test_dumps_prefixes_marked_data_key_when_slash_dash_enabled():
+    jc = jsoncDict({"node": {"x": 1}}, slash_dash=True)
+    jc.comments["node"] = ""
+
+    body = jc.body
+
+    assert '"/-node": {' in body
+    assert '"node": {' not in body
+
+
+def test_dumps_marked_data_key_raises_todo_when_slash_dash_disabled():
+    jc = jsoncDict({"node": {"x": 1}}, slash_dash=False)
+    jc.comments["node"] = ""
+
+    with pytest.raises(NotImplementedError, match=str(_TODO)):
+        jc.body
 
 
 def test_jsonc_dumps_restores_slot_and_between_comments():

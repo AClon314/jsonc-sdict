@@ -321,7 +321,9 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
     def __data_items(self) -> Iterable[tuple[Any, Any]]:
         """Iterate pure data items in storage order, excluding synthetic comment entries."""
-        get_child = unpack_method(getattr(type(self.data), "getChild", None), type(self.data))
+        get_child = unpack_method(
+            getattr(type(self.data), "getChild", None), type(self.data)
+        )
         if get_child is None:
             get_child = self.data.getChild
         return get_child(self.data, self.data.v)
@@ -348,6 +350,51 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             if content and content.text:
                 return content.text.decode()
         raise ValueError(f"unsupported json object key node: {node}")
+
+    def __slash_dash_key(self, key: Any) -> str | None:
+        """Return the logical key behind one `/-name` marker key."""
+        if type(self).slash_dash and isinstance(key, str) and key.startswith("/-"):
+            return key[2:]
+        return None
+
+    def __is_hidden_key(self, owner: Self, key: Any) -> bool:
+        """Runtime-only hidden keys are tracked by an empty-string marker."""
+        return owner.comments.get(key, UNSET) == ""
+
+    def __has_data_key_marker(self, owner: Self, key: Any) -> bool:
+        """Any non-Within comment key that also names a data item is a data-key marker."""
+        return key in owner.comments and not is_comment(key)
+
+    def __key_from_serialized(self, owner: Self, key: Any) -> Any:
+        """Map one serialized object key back to the logical key stored in `owner.data`."""
+        logical = self.__slash_dash_key(key)
+        if logical is None:
+            return key
+        if logical in owner.data and self.__has_data_key_marker(owner, logical):
+            return logical
+        return key
+
+    def __loads_normalize_slash_dash(self, owner: Self) -> None:
+        """Normalize slash-dash keys into logical keys when doing so is conflict-free."""
+        raw = owner.data.v
+        if isinstance(raw, Mapping):
+            for key in list(raw.keys()):
+                logical = self.__slash_dash_key(key)
+                if logical is None or logical in raw:
+                    continue
+                owner.data.rename_key(key, logical, deep=False)
+                owner.comments[logical] = ""
+
+        if isinstance(raw, Mapping):
+            keys = list(owner.data.keys())
+        elif iterable(raw):
+            keys = range(len(raw))
+        else:
+            return
+        for key in keys:
+            child = owner.__children_get(key)
+            if isinstance(child, jsoncDict):
+                self.__loads_normalize_slash_dash(child)
 
     def __loads_is_item(self, container: ts.Node, node: ts.Node) -> bool:
         """Check whether a child node represents a real container item, not a comment."""
@@ -435,7 +482,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         if node.type != "pair" or comment.type != "comment":
             return False
         key_node, colon, value = self.__loads_pair_slots(node)
-        key = self.__loads_pair_key(node)
+        key = self.__key_from_serialized(owner, self.__loads_pair_key(node))
         text = byte[comment.start_byte : comment.end_byte].decode()
         if comment.end_byte <= colon.start_byte:
             self.__loads_collect_pair_comment(owner, key, Within("k", ":"), text)
@@ -510,7 +557,11 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 continue
 
             # Object items use parsed keys; array items use the running index.
-            key = self.__loads_pair_key(child) if container.type == "object" else index
+            key = (
+                self.__key_from_serialized(owner, self.__loads_pair_key(child))
+                if container.type == "object"
+                else index
+            )
             if pending_start is not None and pending_end is not None:
                 text = byte[pending_start:pending_end].decode()
                 self.__loads_set_comment(owner, prev_key, key, text)
@@ -525,7 +576,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             # Pair nodes store the nested container under the `value` field.
             value = child.child_by_field_name("value") or child
             if value.type in ("object", "array"):
-                child_owner = owner[key]
+                child_owner = owner.__children_get(key)
                 if isinstance(child_owner, jsoncDict):
                     self.__loads_walk_container(child_owner, value, byte)
 
@@ -548,6 +599,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         if not raw:
             return self
 
+        self.__loads_normalize_slash_dash(self)
         raw = raw.replace("\r", "")
         byte = raw.encode()
         tree: ts.Tree = self._parser.parse(byte)
@@ -570,9 +622,9 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     def dumps(self, obj: Any | None = None) -> str:
         """Serialize pure data, then restore comments into the emitted JSON text."""
         if obj is None:
-            obj = self.data.unref()
-        elif isinstance(obj, sdict):
-            obj = obj.unref()
+            obj = self.__dumps_export_value(self, self.data)
+        else:
+            obj = self.__dumps_export_value(self, obj)
         dump_func = unpack_method(type(self).__dict__.get("_dumps"), type(self))
         if dump_func is None:
             raise TypeError(f"{type(self).__name__}._dumps is not callable")
@@ -607,11 +659,55 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             if self.__loads_is_item(container, child)
         ]
 
-    def __dumps_item_key(self, container: ts.Node, item: ts.Node, index: int) -> Any:
+    def __dumps_item_key(
+        self, owner: Self, container: ts.Node, item: ts.Node, index: int
+    ) -> Any:
         """Resolve the logical key/index of one serialized item."""
         if container.type == "object":
-            return self.__loads_pair_key(item)
+            return self.__key_from_serialized(owner, self.__loads_pair_key(item))
         return index
+
+    def __dumps_export_value(self, owner: Self | None, value: Any) -> Any:
+        """Build a dump-ready plain object, applying slash-dash markers from comments."""
+        if isinstance(value, jsoncDict):
+            owner = value
+            value = value.data
+        raw = value.v if isinstance(value, sdict) else value
+
+        if isinstance(raw, Mapping):
+            out: OrderedDict[Any, Any] = OrderedDict()
+            for key, item in raw.items():
+                export_key = key
+                child_owner = None
+                if owner is not None:
+                    if self.__is_hidden_key(owner, key) and iterable(item):
+                        if not type(self).slash_dash or not isinstance(key, str):
+                            raise _TODO
+                        export_key = f"/-{key}"
+                    child = owner.children.get(key)
+                    if child is None and key in owner.data:
+                        child = owner.__children_get(key)
+                    if isinstance(child, jsoncDict):
+                        child_owner = child
+                if export_key in out:
+                    raise _TODO
+                out[export_key] = self.__dumps_export_value(child_owner, item)
+            return out
+
+        if iterable(raw):
+            out = []
+            for index, item in enumerate(raw):
+                child_owner = None
+                if owner is not None:
+                    child = owner.children.get(index)
+                    if child is None and index in owner.data:
+                        child = owner.__children_get(index)
+                    if isinstance(child, jsoncDict):
+                        child_owner = child
+                out.append(self.__dumps_export_value(child_owner, item))
+            return out
+
+        return raw
 
     def __dumps_container_indent(self, byte: bytes, offset: int) -> str:
         """Return the current line indentation at `offset`."""
@@ -630,10 +726,6 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         line_start = byte.rfind(b"\n", 0, offset)
         return 0 if line_start < 0 else line_start + 1
 
-    def __dumps_comment_text(self, comment: str, indent: str) -> str:
-        """Normalize one restored comment with the current insertion indent."""
-        return self._dumps_add_indent(comment, indent)
-
     def __dumps_is_line_start(self, byte: bytes, offset: int) -> bool:
         """Check whether `offset` sits at the first non-space column of its line."""
         line_start = byte.rfind(b"\n", 0, offset)
@@ -647,7 +739,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         self, byte: bytes, offset: int, comment: str, indent: str
     ) -> str:
         """Format a between-item comment block around the current item indentation."""
-        text = self.__dumps_comment_text(comment, indent)
+        text = self._dumps_add_indent(comment, indent)
         if self.__dumps_is_line_start(byte, offset):
             return indent + text + "\n"
         return "\n" + indent + text + "\n"
@@ -656,7 +748,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         self, comment: str, indent: str, *, suffix_space: bool = False
     ) -> str:
         """Format one inline pair-slot comment with minimal spacing."""
-        text = self.__dumps_comment_text(comment, indent)
+        text = self._dumps_add_indent(comment, indent)
         if "\n" in text:
             return " " + text + (" " if suffix_space else "")
         return " " + text + (" " if suffix_space else "")
@@ -674,7 +766,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             return
         if indent is None:
             indent = self.__dumps_container_indent(byte, offset)
-        edits.append((offset, self.__dumps_comment_text(comment, indent)))
+        edits.append((offset, self._dumps_add_indent(comment, indent)))
 
     def __dumps_pair_slots(
         self,
@@ -749,7 +841,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         prev_key = NONE
 
         for index, item in enumerate(items):
-            key = self.__dumps_item_key(container, item, index)
+            key = self.__dumps_item_key(owner, container, item, index)
             if comment := owner.comments.get(Within(prev_key, key)):
                 indent = self.__dumps_container_indent(byte, item.start_byte)
                 edits.append(
@@ -829,7 +921,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             comment = self.comments.get(Within(prev_key, key))
             if comment is not None:
                 yield Within(prev_key, key), comment
-            if key in self.comments and not is_comment(key):
+            if self.__is_hidden_key(self, key):
                 prev_key = key
                 continue
             yield key, self.__children_get(key)
