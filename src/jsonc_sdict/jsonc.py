@@ -49,6 +49,7 @@ from jsonc_sdict.share import (
     _TODO,
 )
 from jsonc_sdict.Sdict import sdict, unref
+from jsonc_sdict.Merge import merge as _merge
 
 Log = getLogger(__name__)
 _Type_BeforeSep = Literal["", "\n", ",", "k", ":", "v"]
@@ -143,7 +144,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         dumps: Callable[[Any], str] | UNSET = UNSET,
         slash_dash: bool | UNSET = UNSET,
         auto_indent: bool | UNSET = UNSET,
-    ) -> None:
+    ) -> type[Self]:
         if loads is not UNSET:
             cls._loads = loads
         if dumps is not UNSET:
@@ -152,6 +153,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             cls.slash_dash = slash_dash
         if auto_indent is not UNSET:
             cls.auto_indent = auto_indent
+        return cls
 
     def __init__(
         self,
@@ -191,9 +193,9 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         # NOTE: 其实raw(str)并不重要，我们只关心 data(dict)
         # `sdict.__init__` may call `self.__setitem__`, so setup attrs before this call.
         self.data: sdict[K, V] = sdict(obj, **kwargs)
-        """Pure data, no comment. Include `/-`(slash-dash) as data-key."""
+        """Pure raw data, no Within comment. Include `/-`(slash-dash) as data-key."""
         self.comments: jsoncDict._Type_comments = comments
-        """Comment metadata and runtime-hidden keys for the current depth.
+        """Comment metadata and **runtime-hidden keys** for the current depth.
 
         Key shapes:
             `Within(left, right)`: comment between neighboring items.
@@ -243,7 +245,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
     # mixed view helpers
     @classmethod
-    def split_mixed(cls, mapping: Mapping) -> tuple[OrderedDict, _Type_comments]:
+    def split_mixed(cls, mixed: Mapping) -> tuple[OrderedDict, _Type_comments]:
         """Split a mixed mapping into pure data and comment metadata.
 
         The input may contain normal data keys, `Within(...)` comment keys, or nested mixed
@@ -253,7 +255,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         data_out: OrderedDict = OrderedDict()
         comments_out: jsoncDict._Type_comments = {}
 
-        for key, value in mapping.items():
+        for key, value in mixed.items():
             if is_comment(key):
                 comments_out[key] = value
                 continue
@@ -284,6 +286,13 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             and all(is_comment(child_key) for child_key in value)
         )
         return child_data, child_comments, comment_only
+
+    def merge(self, mixed: Mapping, **kw):
+        data_only = {k: v for k, v in mixed.items() if not is_comment(k)}
+        comment_only = {k: v for k, v in mixed.items() if is_comment(k)}
+        self.data.merge(data_only, **kw)
+        # TODO: solve comment conflict?
+        self.comments = _merge((self.comments, comment_only))()
 
     # child proxy helpers
     def __children_build(self, mapping: Mapping[Any, Any]) -> dict[Any, Self]:
@@ -346,6 +355,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
     # maintenance helpers
     def rebuild(self):
+        """Rebuild `sdict` caches for `self.data` and drop stale child proxies."""
         self.data.rebuild()
         self.children.clear()
         return self
@@ -844,10 +854,17 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             return comment
         return comment.replace("\n", "\n" + indent)
 
-    @property
-    def mixed(self) -> OrderedDict[Any, Any]:
-        """Materialize the current mixed view as an `OrderedDict`."""
-        return OrderedDict(self.items())
+    def hidden_keys(self) -> set[Any]:
+        """Return runtime-hidden data keys stored in `comments` at the current depth."""
+        return {key for key in self.comments if not is_comment(key)}
+
+    def mixed(self, comments: bool = True) -> OrderedDict[Any, Any] | list[Any]:
+        """Materialize the current view.
+
+        `comments=True` keeps `Within(...)` items.
+        `comments=False` returns a recursive data-only view with runtime-hidden keys removed.
+        """
+        return OrderedDict(self.items(comments=comments))
 
     @property
     def comments_flat(self) -> dict[tuple, _Type_comments]:
@@ -940,8 +957,11 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             return default
         raise KeyError(key)
 
-    def items(self) -> Iterable[tuple[K | Within, V | str | dict]]:  # type: ignore
-        """Iterate the exported mixed view in display order.
+    def items(self, comments: bool = True) -> Iterable[tuple[K | Within, V | str | dict]]:  # type: ignore
+        """Iterate the current view in display order.
+
+        `comments=True` yields visible data and `Within(...)` items.
+        `comments=False` yields only data items, recursively filtering runtime-hidden keys.
 
         Yields:
             `Within(left, right), str` for between-item comments.
@@ -950,22 +970,27 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             `Within(last_key, NONE), str` for trailing comments.
         """
         prev_key = NONE
+        hidden_keys = self.hidden_keys()
 
         for key, _ in self.__data_items():
             comment = self.comments.get(Within(prev_key, key))
-            if comment is not None:
+            if comments and comment is not None:
                 yield Within(prev_key, key), comment
-            if key in self.comments:
+            if key in hidden_keys:
                 prev_key = key
                 continue
-            yield key, self.__children_get(key)
+            value = self.__children_get(key)
+            # `comments=False` exports nested jsoncDict nodes as plain data-only views.
+            if not comments and isinstance(value, jsoncDict):
+                value = value.mixed(comments=False)
+            yield key, value
             comment = self.comments.get(Within(key))
-            if comment is not None:
+            if comments and comment is not None:
                 yield Within(key), comment
             prev_key = key
 
         comment = self.comments.get(Within(prev_key, NONE))
-        if comment is not None:
+        if comments and comment is not None:
             yield Within(prev_key, NONE), comment
 
     def keys(self) -> Iterable[K | Within]:  # type: ignore
@@ -975,6 +1000,30 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     def values(self) -> Iterable[V]:  # type: ignore
         for _, value in self.items():
             yield value
+
+    def apply(self) -> Self:
+        """Permanently delete runtime-hidden keys in this tree and all children."""
+        hidden_keys = self.hidden_keys()
+        items = list(self.__data_items())
+
+        for key, _ in items:
+            if key in hidden_keys:
+                continue
+            value = self.__children_get(key)
+            if isinstance(value, jsoncDict):
+                value.apply()
+
+        delete_keys = [key for key, _ in items if key in hidden_keys]
+        if not isinstance(self.data.v, Mapping):
+            delete_keys.sort(reverse=True)
+
+        for key in delete_keys:
+            del self.data[key]
+            self.children.pop(key, None)
+            self.comments.pop(key, None)
+
+        self.__children_sync()
+        return self
 
     def __getitem__(self, key):
         if self.is_keypath(key):
@@ -1042,7 +1091,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         return count
 
     def __repr__(self) -> str:
-        r = repr(self.mixed)
+        r = repr(self.mixed())
         if r.startswith("OrderedDict("):
             r = r[len("OrderedDict(") : -1]
         return f"{type(self).__name__}({r})"
@@ -1055,6 +1104,10 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     def full(self) -> str:
         """header + body + footer"""
         return self.header + self.body + self.footer
+
+    def __call__(self) -> str:
+        """`__call__` may undergo **breaking changes** in the future, based on its most common calling patterns and usage scenarios."""
+        return self.full
 
 
 class hjsonDict[K = str, V = Any](jsoncDict[K, V]):

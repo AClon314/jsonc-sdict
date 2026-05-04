@@ -1,5 +1,6 @@
 import json
 import logging
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -77,14 +78,14 @@ def test_jsoncdict_preserves_current_depth_order():
     assert items[3] == ("2", 2)
     assert is_comment(items[0][0])
     assert not is_comment(items[1][0])
-    assert jd.mixed[Within("6//")] == {Within(":", "v"): "/* 6 */"}
+    assert jd.mixed()[Within("6//")] == {Within(":", "v"): "/* 6 */"}
 
 
 def test_jsoncdict_recurses_into_nested_jsoncdict():
     raw = Path("test/old.jsonc").read_text("utf-8")
     jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps, slash_dash=False)
 
-    mixed_list = jd.mixed["list"]
+    mixed_list = jd.mixed()["list"]
 
     assert isinstance(mixed_list, jsoncDict)
     assert mixed_list[0] == 0
@@ -97,6 +98,7 @@ def test_hidden_key_uses_comments_runtime_marker():
     jd.comments["hide"] = {"reason": "runtime hidden"}
 
     assert list(jd.items()) == [("keep", 1), ("tail", 3)]
+    assert list(jd.items(comments=False)) == [("keep", 1), ("tail", 3)]
     assert list(jd) == ["keep", "tail"]
     assert len(jd) == 2
     with pytest.raises(KeyError):
@@ -107,6 +109,7 @@ def test_len_matches_materialized_items_for_visible_mixed_view():
     jd = jsoncDict({Within(None, "a"): "// dangling", "a": 1, Within("a"): "/*c*/"})
 
     assert list(jd.items()) == [("a", 1), (Within("a"), "/*c*/")]
+    assert list(jd.items(comments=False)) == [("a", 1)]
     assert len(jd) == len(list(jd.items()))
 
 
@@ -128,8 +131,10 @@ def test_mixed_only_skips_hidden_keys_on_that_child_depth():
     node = jc["node"]
     node.comments["hide"] = {"reason": "runtime hidden"}
 
-    assert list(jc.mixed.keys()) == ["node", "tail"]
-    assert list(node.mixed.keys()) == ["keep"]
+    assert list(jc.mixed().keys()) == ["node", "tail"]
+    assert list(jc.mixed(comments=False).keys()) == ["node", "tail"]
+    assert list(node.mixed().keys()) == ["keep"]
+    assert list(node.mixed(comments=False).keys()) == ["keep"]
 
 
 def test_init_splits_top_level_mixed_mapping():
@@ -138,6 +143,7 @@ def test_init_splits_top_level_mixed_mapping():
     assert jd.data["a"] == 1
     assert jd.comments[Within(NONE, "a")] == "// a"
     assert list(jd.items()) == [(Within(NONE, "a"), "// a"), ("a", 1)]
+    assert list(jd.items(comments=False)) == [("a", 1)]
 
 
 def test_init_splits_kv_slot_comment_mapping():
@@ -155,6 +161,48 @@ def test_init_auto_splits_nested_mixed_mapping():
     assert node.data["x"] == 1
     assert node.comments[Within("x")] == "/*c*/"
     assert list(node.items()) == [("x", 1), (Within("x"), "/*c*/")]
+    assert list(node.items(comments=False)) == [("x", 1)]
+
+
+def test_items_default_keeps_within_and_comments_false_filters_recursively():
+    jd = jsoncDict(
+        {
+            Within(NONE, "node"): "// head",
+            "node": {
+                "keep": 1,
+                "hide": 2,
+                Within("keep"): "/* slot */",
+            },
+            "tail": 3,
+        }
+    )
+    jd["node"].comments["hide"] = {"reason": "runtime hidden"}
+
+    assert list(jd.items()) == [
+        (Within(NONE, "node"), "// head"),
+        ("node", jd["node"]),
+        ("tail", 3),
+    ]
+    assert list(jd.items(comments=False)) == [
+        ("node", OrderedDict([("keep", 1)])),
+        ("tail", 3),
+    ]
+
+
+def test_apply_permanently_removes_hidden_keys_recursively():
+    jd = jsoncDict(
+        {
+            "node": {"keep": 1, "hide": 2},
+            "tail": 3,
+        }
+    )
+    jd["node"].comments["hide"] = {"reason": "runtime hidden"}
+
+    jd.apply()
+
+    assert jd.data["node"]["keep"] == 1
+    assert "hide" not in jd.data["node"]
+    assert list(jd["node"].items()) == [("keep", 1)]
 
 
 def test_comments_get_supports_any_wildcard():
@@ -227,11 +275,11 @@ def test_subclass_class_config_is_not_reset_by_init_defaults():
 def test_children_resync_after_data_key_rename():
     raw = Path("test/old.jsonc").read_text("utf-8")
     jd = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps, slash_dash=False)
-    child = jd.mixed["list"]
+    child = jd.mixed()["list"]
 
     jd.data.rename_key("list", "items")
 
-    assert jd.mixed["items"] is child
+    assert jd.mixed()["items"] is child
     assert child.comments[(0, 1)] == "// 1,"
 
 
