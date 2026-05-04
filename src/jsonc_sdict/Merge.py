@@ -427,8 +427,10 @@ class merge[T1, T2](Iterable):
         assert root is not None
         assert node is not None
         assert diffType is not None
+        old = self.get_item(root.t1, node)
+        new = self.get_item(root.t2, node)
 
-        if diffType == "values_changed":
+        if diffType == "values_changed" and iterable(old) and iterable(new):
             Log.debug(
                 "deepdiff don't handle dict, so give up and next solver(usually `solver_mergeable`)"
             )
@@ -576,11 +578,12 @@ class merge[T1, T2](Iterable):
         if not self._iter_started:
             next(self)
         if self.env.diffType == "values_changed":
-            self.solver_unMergeable()
+            solved = self.solver_unMergeable()
+            if solved:
+                return self
         elif self.env.diffType == "type_changes":
             self.solver_unMergeable()
-            Log.warning(
-                """you can handle "type_changes" case manually:
+            Log.warning("""you can handle "type_changes" case manually:
 1. If you want your class to be merged correctly, it must be recognized as one of the following types: Mapping (dict), Sequence (list), or Set.
    For details, see `merge.deepdiff_args["ignore_type_in_groups"] = ((MutableMapping, MyObjType), ...)` and refer to the DeepDiff documentation (recommended to consult context7).
 2. If you do NOT want merging and prefer to overwrite directly with either the new or old value, you can write it like this:
@@ -590,8 +593,7 @@ for gen in merge(...):
         gen.solver_unMergeable(unMergeable="new") # directly use new value
     else:
         gen.solvers_XXX()
-```"""
-            )
+```""")
             return self
         elif self.env.diffType == "repetition_change":
             raise _TODO

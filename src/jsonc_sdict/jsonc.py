@@ -296,12 +296,13 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         )
         return child_data, child_comments, comment_only
 
-    def merge(self, mixed: Mapping, **kw: Unpack[_merge.Kwargs]):
+    def merge(self, mixed: Mapping, **kw: Unpack[_merge.Kwargs]) -> Self:
         data_only = {k: v for k, v in mixed.items() if not is_comment(k)}
         comment_only = {k: v for k, v in mixed.items() if is_comment(k)}
         self.data.merge(data_only, **kw)
         # TODO: solve comment conflict?
         self.comments = _merge((self.comments, comment_only), **kw)()
+        return self
 
     # child proxy helpers
     def __children_build(self, mapping: Mapping[Any, Any]) -> dict[Any, Self]:
@@ -361,7 +362,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         return get_child(self.data, self.data.v)
 
     # maintenance helpers
-    def rebuild(self):
+    def rebuild(self) -> Self:
         """Rebuild `sdict` caches for `self.data` and drop stale child proxies."""
         self.data.rebuild()
         self.children.clear()
@@ -1149,7 +1150,7 @@ class CompactJSONEncoder(json.JSONEncoder):
         super().__init__(*args, **kwargs)
         self.indentation_level = 0
 
-    def encode(self, o):
+    def encode(self, o) -> str:
         """Encode JSON object *o* with respect to single line lists."""
         if isinstance(o, (list, tuple)):
             return self._encode_list(o)
