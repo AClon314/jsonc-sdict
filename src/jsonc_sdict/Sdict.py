@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 """Ordered nested mapping helpers used by `jsoncDict` and merge flows."""
 
+from __future__ import annotations
 import re
 from weakref import ref, WeakKeyDictionary, WeakValueDictionary
 from dataclasses import dataclass
@@ -191,7 +190,13 @@ def get_item_attr[D](
         raise
 
 
-def set_item_attr(obj, keys: Sequence, value) -> None:
+def set_item_attr(
+    obj,
+    keys: Sequence,
+    value,
+    overwrite: bool = True,
+    nestFactory: Callable[..., MutableMapping | MutableSequence] | None = None,
+) -> None:
     """
     **smartly** access nested obj like `obj[key0].key1...`\n
     try __getitem__() if has this method, or __getattribute__(), try like this in each level.\n
@@ -237,7 +242,13 @@ def set_item_attr(obj, keys: Sequence, value) -> None:
         setattr(parent, k, value)
 
 
-def set_item(obj, keys: Sequence, value) -> None:
+def set_item(
+    obj,
+    keys: Sequence,
+    value,
+    overwrite: bool = True,
+    nestFactory: Callable[..., MutableMapping | MutableSequence] | None = None,
+) -> None:
     """see `get_item()` & `get_item_attr()`"""
     parent = get_item(obj, iSlice(keys))
     parent[keys[-1]] = value  # type: ignore
@@ -923,14 +934,14 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """deep unref all `sdict.v`, used for `json.dumps(sd.unref)`"""
         return unref(self.v)
 
-    def __hint_e(self, key, e: BaseException):
-        if self._is_keypath(key):
+    def __error_note(self, key, e: BaseException):
+        if self.is_keypath(key):
             e.add_note(
                 f"If {key!r} is a single key, not a key path, wrap it in an outer list or tuple, for example: [{key!r}]"
             )
 
     @staticmethod
-    def _is_keypath(key: Any) -> TypeIs[Sequence]:
+    def is_keypath(key: Any) -> TypeIs[Sequence]:
         return isinstance(key, Sequence) and not isinstance(
             key, (str, bytes, bytearray)
         )
@@ -950,7 +961,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         try:
             return get_item_attr(self.v, key, default, noRaise)
         except (KeyError, IndexError, TypeError, AttributeError) as e:
-            self.__hint_e(key, e)
+            self.__error_note(key, e)
             raise
 
     @overload
@@ -966,7 +977,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         """
         if isinstance(key, slice):
             v = [x for x in self.values_flat(slice=key, digLeaf=False)]
-        elif self.use_ref or self._is_keypath(key):
+        elif self.use_ref or self.is_keypath(key):
             # key is list / tuple
             v = self.getitem(key)
         else:
@@ -990,12 +1001,18 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             raise _TODO
         return v
 
-    def setitem(self, key: Sequence[K], value, at=None):
-        """see `set_item_attr()`"""
+    def setitem(self, key: Sequence[K], value, at=None, overwrite: bool = True):
+        """
+        see `set_item_attr()`
+        Args:
+            overwrite: set to `False` will behave like `.setdefault()`
+        """
         try:
-            return set_item_attr(self.v if at is None else at, key, value)
+            return set_item_attr(
+                self.v if at is None else at, key, value, overwrite=overwrite
+            )
         except (KeyError, IndexError, TypeError, AttributeError) as e:
-            self.__hint_e(key, e)
+            self.__error_note(key, e)
             raise
 
     def __setitem__(self, key: K | Sequence[K] | slice, value):
@@ -1003,7 +1020,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             raise _TODO  # TODO: batch
             for i in self.keys_flat(slice=key):
                 self[i] = value
-        elif self.use_ref or self._is_keypath(key):
+        elif self.use_ref or self.is_keypath(key):
             self.setitem(key, value)
         else:
             super().__setitem__(key, value)
@@ -1018,7 +1035,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         try:
             return del_item_attr(self.v if at is None else at, key)
         except (KeyError, IndexError, TypeError, AttributeError) as e:
-            self.__hint_e(key, e)
+            self.__error_note(key, e)
             raise
 
     def __delitem__(self, key: K | Sequence[K] | slice):
@@ -1026,7 +1043,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             raise _TODO  # TODO: batch
             for i in self.keys_flat(slice=key):
                 del self[i]
-        elif self.use_ref or self._is_keypath(key):
+        elif self.use_ref or self.is_keypath(key):
             self.delitem(key)
         else:
             super().__delitem__(key)

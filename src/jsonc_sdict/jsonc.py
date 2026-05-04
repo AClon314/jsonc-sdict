@@ -104,7 +104,7 @@ class Within[A, B](tuple[A, B]):
         return super().__hash__()
 
 
-def is_comment[A, B](key: Within[A, B] | Any) -> TypeIs[Within[A, B]]:
+def is_comment(key: Within | Any) -> TypeIs[Within]:
     return isinstance(key, Within)
 
 
@@ -1042,6 +1042,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         return self
 
     def __getitem__(self, key):
+        # NOTE: same as Sdict.get_item()
         if self.is_keypath(key):
             value = self
             for part in key:

@@ -22,7 +22,7 @@ print(jc.full)
 ```
 """
 
-from .share import NONE, UNSET, _PKG_
+from .share import NONE, UNSET
 from .jsonc import (
     json_dumps,
     is_comment,

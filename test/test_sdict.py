@@ -360,8 +360,8 @@ def test_sdict_unref_property_returns_plain_nested_data():
 
 
 def test_sdict_is_nestKeys_excludes_strings():
-    assert sdict._is_keypath(("a", "b")) is True
-    assert sdict._is_keypath("ab") is False
+    assert sdict.is_keypath(("a", "b")) is True
+    assert sdict.is_keypath("ab") is False
 
 
 def test_sdict_getitem_method_returns_default_for_missing_path():

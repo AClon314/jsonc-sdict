@@ -2,7 +2,7 @@ from typing import Literal
 
 import pytest
 
-from jsonc_sdict.share import in_range, len_slice, return_of, args_of_type
+from jsonc_sdict.share import in_range, return_of, args_of_type
 
 
 def test_return_helpers_consume_generators():
@@ -37,15 +37,6 @@ def test_in_range():
     assert in_range(-1, slice(-2, None), total=5)
     assert not in_range(4, slice(None, -1), total=5)
     assert in_range(-1, slice(None, None, -1), total=5)
-
-
-def test_len_slice():
-    assert len_slice(10, slice(2, 8, 2)) == 3
-    assert len_slice(5, slice(-3, 5)) == 3
-    assert len_slice(10, slice(8, 2, -2)) == 3
-    assert len_slice(5, slice(10, 20)) == 0
-    assert len_slice(7, slice(None)) == 7
-    assert len_slice(0, slice(1, 3)) == 0
 
 
 def test_values_of_type_unwraps_nested_type_alias_union():
