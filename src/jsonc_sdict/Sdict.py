@@ -27,21 +27,18 @@ from collections.abc import (
     Mapping,
     Sequence,
     MutableMapping,
-    MutableSequence,
-    MutableSet,
     Iterator,
 )
 
+from jsonc_sdict.GetSetDel import del1, get1, set1
 
 from jsonc_sdict.share import (
     UNSET,
-    RAISE,
     NONE,
     copy_args,
     args_of_type,
     isFlatIterable,
     iterable,
-    iSlice,
     in_range,
     are_equal,
     getLogger,
@@ -73,211 +70,6 @@ type NestMapIter[K = Any, Leaf = Any] = (
 )
 
 Log = getLogger(__name__)
-
-
-# ------------------------------------------------------------
-# recursive get
-# ------------------------------------------------------------
-
-
-def get_item[K, D](
-    obj: NestMutMap[K],
-    keys: Iterable[K],
-    default: D = RAISE,
-    noRaise: tuple[type[BaseException], ...] = (KeyError, IndexError, TypeError),
-) -> Any | D:
-    """
-    access nested obj like `obj[key0][key1]...`\n
-    Args:
-        obj: has nested `__getitem__()`, or raise `TypeError`
-        keys: [key0, key1...], can raise `KeyError`(dict/map) or `IndexError`(list)
-        default: when raise `Except`, return default as fallback
-        noRaise: do NOT raise Error that in noRaise,\n
-            can use `(Exception,)` to suppress all Exceptions,\n
-            or use `()` to raise all Exceptions
-    """
-    if default is RAISE:
-        noRaise = ()
-    if not iterable(keys):
-        return obj[keys]  # type: ignore
-    if not keys:
-        return obj
-    try:
-        for k in keys:
-            obj = obj[k]
-        return obj
-    except noRaise:
-        return default
-    except Exception:
-        raise
-
-
-def get_attr[D](
-    obj,
-    keys: Iterable[str],
-    default: D = RAISE,
-    noRaise: tuple[type[BaseException], ...] = (AttributeError,),
-) -> Any | D:
-    """
-    access nested obj like `obj.key0.key1...`\n
-    Args:
-        obj: has nested attribute that link to deeper obj
-        keys: [key0, key1...], can raise `AttributeError`
-        default: when raise `Except`, return default as fallback
-        noRaise: do NOT raise Error that in noRaise,\n
-            can use `(Exception,)` to suppress all Exceptions,\n
-            or use `()` to raise all Exceptions
-    """
-    if default is RAISE:
-        noRaise = ()
-    if not iterable(keys):
-        return getattr(obj, keys)  # type: ignore
-    if not keys:
-        return obj
-    try:
-        for k in keys:
-            obj = getattr(obj, k)
-        return obj
-    except noRaise:
-        return default
-    except Exception:
-        raise
-
-
-def get_item_attr[D](
-    obj,
-    keys: Iterable,
-    default: D = RAISE,
-    noRaise: tuple[type[BaseException], ...] = (
-        KeyError,
-        IndexError,
-        TypeError,
-        AttributeError,
-    ),
-) -> Any | D:
-    """
-    **smartly** access nested obj like `obj[key0].key1...`\n
-    try __getitem__() if has this method, or __getattribute__(), try like this in each level.\n
-    Args:
-        obj: need nested `__getitem__()` or `__getattribute__()` and implemented correctly
-        keys: [key0, key1...]
-        default: when raise `Except`, return default as fallback
-        noRaise: do NOT raise Error that in noRaise,\n
-            can use `(Exception,)` to suppress all Exceptions,\n
-            or use `()` to raise all Exceptions
-    """
-    if default is RAISE:
-        noRaise = ()
-    if not iterable(keys):
-        # if not container, just directly return (如果不是容器，直接返回)
-        if hasattr(obj, "__getitem__"):
-            return obj[keys]
-        else:
-            return getattr(obj, keys)  # type: ignore
-    if not keys:
-        # if at root, just return itself (如果是根容器，直接返回自自身)
-        return obj
-    try:
-        for k in keys:
-            if hasattr(obj, "__getitem__"):
-                obj = obj[k]
-            else:
-                obj = getattr(obj, k)
-        return obj
-    except noRaise:
-        return default
-    except Exception:
-        raise
-
-
-def set_item_attr(
-    obj,
-    keys: Sequence,
-    value,
-    overwrite: bool = True,
-    nestFactory: Callable[..., MutableMapping | MutableSequence] | None = None,
-) -> None:
-    """
-    **smartly** access nested obj like `obj[key0].key1...`\n
-    try __getitem__() if has this method, or __getattribute__(), try like this in each level.\n
-    Args:
-        obj: need nested `__get/setitem__()` or `__get/setattribute__()` and implemented correctly
-        keys: [key0, key1...]
-    """
-    if not iterable(keys):
-        if hasattr(obj, "__setitem__"):
-            obj[keys] = value
-        else:
-            setattr(obj, keys, value)
-        return
-    if not keys:
-        # if at root, try to update itself (如果是根容器，尝试更新自己)
-        if hasattr(obj, "__setitem__"):
-            obj.clear()
-            if isinstance(obj, (MutableMapping, MutableSet)):  # need ordered_set
-                obj.update(value)
-            elif isinstance(obj, MutableSequence):
-                obj.extend(value)
-            else:
-                raise TypeError(
-                    f"Failed to update {type(obj)=} at root level ({keys=})"
-                )
-        else:
-            # TODO: need test
-            obj.__dict__.clear()
-            obj.__dict__.update(value.__dict__)
-        return
-
-    Log.debug(f"{obj=}\t{list(iSlice(keys))=}")
-    parent = get_item_attr(obj, iSlice(keys))
-    k = keys[-1]
-    if hasattr(parent, "__setitem__"):
-        # Bypass sdict.__setitem__ keypath/ref dispatch on the leaf container.
-        if isinstance(parent, sdict):
-            OrderedDict.__setitem__(parent, k, value)
-            parent.del_cache(only=parent._cached_child)
-        else:
-            parent[k] = value  # type: ignore
-    else:
-        setattr(parent, k, value)
-
-
-def set_item(
-    obj,
-    keys: Sequence,
-    value,
-    overwrite: bool = True,
-    nestFactory: Callable[..., MutableMapping | MutableSequence] | None = None,
-) -> None:
-    """see `get_item()` & `get_item_attr()`"""
-    parent = get_item(obj, iSlice(keys))
-    parent[keys[-1]] = value  # type: ignore
-
-
-def del_item_attr(obj, keys: Sequence) -> None:
-    """see `set_item_attr()`"""
-    if not iterable(keys):
-        if hasattr(obj, "__delitem__"):
-            del obj[keys]
-        else:
-            delattr(obj, keys)
-        return
-    parent = get_item_attr(obj, iSlice(keys))
-    k = keys[-1]
-    if hasattr(parent, "__delitem__"):
-        if isinstance(parent, sdict):
-            OrderedDict.__delitem__(parent, k)
-            parent.del_cache(only=parent._cached_child)
-        else:
-            del parent[k]  # type: ignore
-    else:
-        delattr(parent, k)
-
-
-def del_item(obj, keys: Sequence) -> None:
-    """see `set_item_attr()`"""
-    parent = get_item(obj, iSlice(keys))
-    del parent[keys[-1]]  # type: ignore
 
 
 # ------------------------------------------------------------
@@ -478,7 +270,7 @@ class dfs[K = int | Any, V = Any, CLS = "sdict"](Generator[CLS, CLS, CLS]):
         cls: type[CLS] | None = None,
         getChild: GetChildFunc = get_children,
         readonly=False,
-        setValue: SetValueFunc = set_item_attr,
+        setValue: SetValueFunc = set1.ia,
         *,
         pathSeenIds: set[int] | None = None,
         forkGraph: ForkGraph | None = None,
@@ -675,7 +467,7 @@ def dictDict[CLS = "sdict"](
     ```python
     from functools import partial
 
-    for sdic in dictDict(dfs(obj), value_of_idKey=partial(get_item, keys="id")):
+    for sdic in dictDict(dfs(obj), value_of_idKey=partial(get1.item, keys="id")):
         # will auto update {..., children: [{"id":123},...]} to {..., children: {123:{...}, ...}}
         # but if not found the "id", will raise KeyError
 
@@ -690,7 +482,7 @@ def dictDict[CLS = "sdict"](
         Args:
         obj: dict or list, Map or Iterable
         value_of_idKey(current_dict): get merge-key of each item.
-            For `dict["id"]`, use `partial(get_item, keys="id")`.
+            For `dict["id"]`, use `partial(get1.item, keys="id")`.
 
     Raises:
         KeyError: when `value_of_idKey()` tries to access a missing key like `"id"`
@@ -747,12 +539,12 @@ def un_dictDict[CLS = "sdict"](context: ddReturn[CLS]) -> CLS:
     # Restore deepest paths first so child paths like ("groups", "g1", "children")
     # still exist before their parent ("groups") is turned back into a list.
     for keypath in sorted(set(context.keypaths), key=len, reverse=True):
-        current = get_item_attr(root, keypath, default=UNSET)
+        current = get1.ia(root, keypath, default=UNSET)
         if current is UNSET or not isinstance(current, Mapping):
             continue
         restored = list(current.values())
         if keypath:
-            set_item_attr(root, keypath, restored)
+            set1.ia(root, keypath, restored)
         else:
             root = restored
     context.v = root
@@ -957,9 +749,9 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
             AttributeError,
         ),
     ):
-        """see `get_item_attr()`"""
+        """see `get1.ia()`"""
         try:
-            return get_item_attr(self.v, key, default, noRaise)
+            return get1.ia(self.v, key, default=default, noRaise=noRaise)
         except (KeyError, IndexError, TypeError, AttributeError) as e:
             self.__error_note(key, e)
             raise
@@ -1003,14 +795,15 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
 
     def setitem(self, key: Sequence[K], value, at=None, overwrite: bool = True):
         """
-        see `set_item_attr()`
+        see `set1.ia()`
         Args:
             overwrite: set to `False` will behave like `.setdefault()`
         """
+        obj = self.v if at is None else at
         try:
-            return set_item_attr(
-                self.v if at is None else at, key, value, overwrite=overwrite
-            )
+            if not overwrite and get1.ia(obj, key, default=NONE) is not NONE:
+                return
+            return set1.ia(obj, key, value)
         except (KeyError, IndexError, TypeError, AttributeError) as e:
             self.__error_note(key, e)
             raise
@@ -1031,9 +824,9 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         raise _TODO  # TODO
 
     def delitem(self, key: Sequence[K], at=None):
-        """see `del_item_attr()`"""
+        """delete by nested keypath"""
         try:
-            return del_item_attr(self.v if at is None else at, key)
+            return del1.ia(self.v if at is None else at, key)
         except (KeyError, IndexError, TypeError, AttributeError) as e:
             self.__error_note(key, e)
             raise
@@ -1413,7 +1206,7 @@ class sdict[K = str, V = Any, R = Any](OrderedDict[K, V]):
         maxDepth=float("inf"),
         getChild: dfs.GetChildFunc = get_children,
         readonly=False,
-        setValue=set_item_attr,
+        setValue=set1.ia,
         **kwargs: Unpack[dfs._Kwargs],
     ) -> dfs[K, V, Self]:
         """see `dfs(**kwargs)`"""

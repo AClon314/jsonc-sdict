@@ -2,8 +2,8 @@ from functools import partial
 
 import pytest
 
+from jsonc_sdict.GetSetDel import get1
 from jsonc_sdict.Merge import DeepDiffProtocol, merge
-from jsonc_sdict.Sdict import get_item
 from jsonc_sdict.share import are_equal
 
 
@@ -54,7 +54,7 @@ def test_merge_dictDict():
     merged = (
         merge(
             (t1, t2),
-            dictDict={"value_of_idKey": partial(get_item, keys="id")},
+            dictDict={"value_of_idKey": partial(get1.item, keys="id")},
             unMergeable="new",
             mergeable=merge.mergeable_prefer_new,
         )

@@ -42,6 +42,7 @@ from deepdiff.operator import BaseOperator
 from deepdiff.helper import NotPresent
 from deepdiff.model import DiffLevel
 
+from jsonc_sdict.GetSetDel import del1, get1, gets, set1
 from jsonc_sdict.share import (
     PS,
     TV,
@@ -60,9 +61,6 @@ from jsonc_sdict.Sdict import (
     dfs,
     dictDict,
     ddReturn,
-    get_item_attr,
-    set_item_attr,
-    del_item_attr,
     un_dictDict,
     KwargsDictDict as SdictKwargsDictDict,
 )
@@ -323,7 +321,7 @@ class merge[T1, T2](Iterable):
         assert node is not None
         if isinstance(root, DeepDiffProtocol):
             root = root.t1
-        return get_item_attr(root, node.keypath, default=default, noRaise=noRaise)
+        return get1.ia(root, node.keypath, default=default, noRaise=noRaise)
 
     @_inject_args
     def set_item(
@@ -343,7 +341,7 @@ class merge[T1, T2](Iterable):
             value = None
         elif value is UNSET:
             value = self.get_item(root.t2, node)
-        return set_item_attr(root.t1, node.keypath, value)
+        return set1.ia(root.t1, node.keypath, value)
 
     @_inject_args
     def del_item(
@@ -357,7 +355,7 @@ class merge[T1, T2](Iterable):
         assert node is not None
         if isinstance(root, DeepDiffProtocol):
             root = root.t1
-        return del_item_attr(root, node.keypath)
+        return del1.ia(root, node.keypath)
 
     @_inject_args
     def solver_keepInitClass(
@@ -708,7 +706,7 @@ for gen in merge(...):
         Args:
             old_new: also accepct DeepDiff(t1, t2, \\*\\*merge.deepdiff_args) \n
                 will overwrite the `old`, but you can use `old2 = deepcopy(old)` and pass like `old_new=(old2, new)`, see [Destructive Merge](https://deepmerge.readthedocs.io/en/latest/guide.html#merges-are-destructive)
-            dictDict: suggest `{"value_of_idKey": partial(get_item, keys="id")}`. convert `list[dict]` into `dict[dict]` with extracted merge-key internally, set to `None` to disable `dictDict()` pre-process. \n
+            dictDict: suggest `{"value_of_idKey": partial(get1.item, keys="id")}`. convert `list[dict]` into `dict[dict]` with extracted merge-key internally, set to `None` to disable `dictDict()` pre-process. \n
                 because list[dict] is hard to merge correctly(while dict or list[int|bool|str...basic_type_not_container] is easy) \n
                 disabled when `old_new` is already DeepDiff, because dictDict() should run before DeepDiff()
             deepdiff_args: the kwargs to init DeepDiff(\\*\\*deepdiff_args), disabled when `old_new` is already DeepDiff
@@ -849,7 +847,7 @@ def _main_(
 
         dictDict: merge._KwargsDictDict | None
         if idKey is not None:
-            dictDict = {"value_of_idKey": partial(get_item_attr, keys=idKey)}
+            dictDict = {"value_of_idKey": partial(get1.ia, keys=idKey)}
         elif nmld:
             dictDict = {"value_of_idKey": id}
         else:

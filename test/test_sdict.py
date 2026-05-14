@@ -4,17 +4,11 @@ from weakref import WeakKeyDictionary, WeakValueDictionary
 
 import pytest
 
+from jsonc_sdict.GetSetDel import del1, get1, set1
 from jsonc_sdict.Sdict import (
     all_path,
     dictDict,
-    del_item,
-    del_item_attr,
     dfs,
-    get_attr,
-    get_item,
-    get_item_attr,
-    set_item,
-    set_item_attr,
     sdict,
     un_dictDict,
     unref,
@@ -31,11 +25,11 @@ def test_nested_helper_accessors_work_on_dicts_and_objects():
     root.child = Box()
     root.child.value = 9
 
-    assert get_item(data, ["a", "b", 1, "c"]) == 3
-    assert partial(get_item, keys="a")({"a": 7}) == 7
-    assert get_attr(root, ["child", "value"]) == 9
-    assert get_item_attr(root, ["child", "value"]) == 9
-    assert get_item(data, ["missing"], default="fallback") == "fallback"
+    assert get1.item(data, ["a", "b", 1, "c"]) == 3
+    assert partial(get1.item, keys="a")({"a": 7}) == 7
+    assert get1.attr(root, ["child", "value"]) == 9
+    assert get1.ia(root, ["child", "value"]) == 9
+    assert get1.item(data, ["missing"], default="fallback") == "fallback"
 
 
 def test_all_path_returns_node_key_dict_for_leaf_path():
@@ -180,13 +174,13 @@ def test_nested_helper_mutators_work_in_place():
     root.child.value = 2
     root.child.extra = 3
 
-    set_item(data, ["a", "b"], 7)
-    set_item_attr(root, ["child", "value"], 8)
+    set1.item(data, ["a", "b"], 7)
+    set1.ia(root, ["child", "value"], 8)
     assert data == {"a": {"b": 7}}
     assert root.child.value == 8
 
-    del_item(data, ["a", "b"])
-    del_item_attr(root, ["child", "extra"])
+    del1.item(data, ["a", "b"])
+    del1.ia(root, ["child", "extra"])
     assert data == {"a": {}}
     assert not hasattr(root.child, "extra")
 
@@ -198,10 +192,10 @@ def test_nested_helper_mutators_follow_parent_container_type():
     root = Box()
     root.child = {"value": 2, "extra": 3}
 
-    set_item_attr(root, ["child", "value"], 8)
+    set1.ia(root, ["child", "value"], 8)
     assert root.child["value"] == 8
 
-    del_item_attr(root, ["child", "extra"])
+    del1.ia(root, ["child", "extra"])
     assert "extra" not in root.child
 
 
@@ -250,14 +244,14 @@ def test_un_dictDict_restores_nested_and_root_lists():
         "keep": {"value": 1},
     }
     nested_ctx = return_of(
-        dictDict(dfs(nested), value_of_idKey=partial(get_item, keys="id"))
+        dictDict(dfs(nested), value_of_idKey=partial(get1.item, keys="id"))
     )
     nested_restored = un_dictDict(nested_ctx)
     assert unref(nested_restored) == nested
 
     root = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
     root_ctx = return_of(
-        dictDict(dfs(root), value_of_idKey=partial(get_item, keys="id"))
+        dictDict(dfs(root), value_of_idKey=partial(get1.item, keys="id"))
     )
     root_restored = un_dictDict(root_ctx)
     assert unref(root_restored) == root
@@ -279,7 +273,7 @@ def test_sdict_merge_merges_into_self_and_forwards_kwargs():
 
     result = data.merge(
         {"children": [{"id": 1, "name": "2", "new": ""}, {"id": 2, "name": "3"}]},
-        dictDict={"value_of_idKey": partial(get_item, keys="id")},
+        dictDict={"value_of_idKey": partial(get1.item, keys="id")},
         unMergeable="new",
     )
     should = {
@@ -386,12 +380,12 @@ def test_sdict_dunder_setitem_updates_nested_value():
     assert data["a"]["b"] == 3
 
 
-def test_sdict_delitem_method_deletes_nested_value():
-    data = sdict({"a": {"b": 1}}, deep=False)
+# def test_sdict_delitem_method_deletes_nested_value():
+#     data = sdict({"a": {"b": 1}}, deep=False)
 
-    data.delitem(["a", "b"])
+#     data.delitem(["a", "b"])
 
-    assert data == {"a": {}}
+#     assert data == {"a": {}}
 
 
 def test_sdict_dunder_delitem_deletes_nested_value():

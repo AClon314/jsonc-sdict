@@ -341,7 +341,7 @@ TV = TypeVar("TV")
 def copy_args(
     func: Callable[PS, Any],
 ) -> Callable[[Callable[..., TV]], Callable[PS, TV]]:
-    """Decorator does nothing but returning the casted original function"""
+    """Decorator does nothing but returning the casted original function. `pylance` OK but `ty` not working."""
 
     def return_func(func: Callable[..., TV]) -> Callable[..., TV]:
         return func

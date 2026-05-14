@@ -1042,7 +1042,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         return self
 
     def __getitem__(self, key):
-        # NOTE: same as Sdict.get_item()
+        # NOTE: same as get1.item()
         if self.is_keypath(key):
             value = self
             for part in key:
