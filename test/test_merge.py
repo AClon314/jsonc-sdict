@@ -1,6 +1,7 @@
 from functools import partial
 
 import pytest
+from deepdiff import DeepDiff as RawDeepDiff
 
 from jsonc_sdict.GetSetDel import get1
 from jsonc_sdict.Merge import DeepDiffProtocol, merge
@@ -92,3 +93,70 @@ def test_merge_dictionary_item_added_respects_container_preference():
 
     assert keep_old == old
     assert keep_new == new
+
+
+def test_merge_iterable_item_add_remove_respects_preference():
+    keep_old = merge(RawDeepDiff([1], [1, 2], view="tree")).solve_all().merged
+    keep_new = merge(
+        RawDeepDiff([1], [1, 2], view="tree"), unMergeable="new"
+    ).solve_all().merged
+    removed_old = merge(RawDeepDiff([1, 2], [1], view="tree")).solve_all().merged
+    removed_new = merge(
+        RawDeepDiff([1, 2], [1], view="tree"), unMergeable="new"
+    ).solve_all().merged
+
+    assert keep_old == [1]
+    assert keep_new == [1, 2]
+    assert removed_old == [1, 2]
+    assert removed_new == [1]
+
+
+def test_merge_set_item_add_remove_respects_preference():
+    keep_old = merge(RawDeepDiff({1}, {1, 2}, view="tree")).solve_all().merged
+    keep_new = merge(
+        RawDeepDiff({1}, {1, 2}, view="tree"), unMergeable="new"
+    ).solve_all().merged
+    removed_old = merge(RawDeepDiff({1, 2}, {1}, view="tree")).solve_all().merged
+    removed_new = merge(
+        RawDeepDiff({1, 2}, {1}, view="tree"), unMergeable="new"
+    ).solve_all().merged
+
+    assert keep_old == {1}
+    assert keep_new == {1, 2}
+    assert removed_old == {1, 2}
+    assert removed_new == {1}
+
+
+def test_merge_attribute_add_remove_respects_preference():
+    class Obj:
+        pass
+
+    def make_add_pair():
+        old = Obj()
+        old.a = 1
+        new = Obj()
+        new.a = 1
+        new.b = 2
+        return old, new
+
+    def make_remove_pair():
+        old = Obj()
+        old.a = 1
+        old.b = 2
+        new = Obj()
+        new.a = 1
+        return old, new
+
+    keep_old = merge(RawDeepDiff(*make_add_pair(), view="tree")).solve_all().merged
+    keep_new = merge(
+        RawDeepDiff(*make_add_pair(), view="tree"), unMergeable="new"
+    ).solve_all().merged
+    removed_old = merge(RawDeepDiff(*make_remove_pair(), view="tree")).solve_all().merged
+    removed_new = merge(
+        RawDeepDiff(*make_remove_pair(), view="tree"), unMergeable="new"
+    ).solve_all().merged
+
+    assert not hasattr(keep_old, "b")
+    assert keep_new.b == 2
+    assert removed_old.b == 2
+    assert not hasattr(removed_new, "b")

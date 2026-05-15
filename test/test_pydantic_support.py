@@ -117,7 +117,7 @@ def test_pydantic_merge_config():
     old.api = {}
     old.version = "0.1"
 
-    old.schema_ = f"file:///{SELF.as_posix()}"
+    old.schema_ = f"file://{SELF.as_posix()}"
     old.__pydantic_fields_set__.add("version")
     if old.实验 is not None:
         old.__pydantic_fields_set__.add("实验")

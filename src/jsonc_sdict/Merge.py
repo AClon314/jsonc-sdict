@@ -575,33 +575,65 @@ class merge[T1, T2](Iterable):
         undef_t2 = isNotPresent(node.t2)
         if undef_t1 and undef_t2:
             raise ValueError("node.t1 and node.t2 both NotPresent")
-        types, order = self._match_mergeable(
-            parent, mergeable, log_name="add/remove mergeable"
-        )
+        try:
+            types, order = self._match_mergeable(
+                parent, mergeable, log_name="add/remove mergeable"
+            )
+        except ValueError:
+            if diffType.startswith("attribute_"):
+                types = object
+                order = self.env.unMergeable
+            else:
+                raise
         primary_order = self._primary_order(order)
         if item_removed and primary_order == "old":
             return self
         if item_removed and primary_order == "new":
-            self.del_item(root, node)
+            self._apply_add_remove(root, node, parent, diffType)
             return self
         if item_added and primary_order == "old":
             return self
         if item_added and primary_order == "new":
-            self.set_item(root, node)
+            self._apply_add_remove(root, node, parent, diffType)
             return self
         if order == "del":
-            self.del_item(root, node)
+            if item_removed:
+                self._apply_add_remove(root, node, parent, diffType)
         elif order == "":
             self.set_item(root, parent, parent.t1.__class__())
         elif order == "old":
             pass
         elif order == "new" or (undef_t1 and "new" in order):  # type: ignore
-            self.set_item(root, node)
+            self._apply_add_remove(root, node, parent, diffType)
         elif "^" in order:  # type: ignore
             self.solver_intersect(root, parent, order=order, diffType="values_changed")
         else:
             raise ValueError(f"invalid {{{types}:{order}}} from {mergeable=}")
         return self
+
+    def _apply_add_remove(
+        self,
+        root: DeepDiff,
+        node: DeepDiff | DiffLevel,
+        parent: DeepDiff | DiffLevel,
+        diffType: Type_DiffReport,
+    ) -> None:
+        if diffType == "dictionary_item_added" or diffType == "attribute_added":
+            self.set_item(root, node)
+        elif diffType == "dictionary_item_removed" or diffType == "attribute_removed":
+            self.del_item(root, node)
+        elif diffType == "iterable_item_added":
+            parent.t1.insert(node.keypath[-1], node.t2)
+        elif diffType == "iterable_item_removed":
+            self.del_item(root, node)
+        elif diffType == "set_item_added":
+            parent.t1.add(node.t2)
+        elif diffType == "set_item_removed":
+            parent.t1.discard(node.t1)
+        else:
+            raise NotImplementedError(
+                f"solver_add_remove() does not support {diffType} yet"
+            )
 
     def _match_mergeable(
         self,
@@ -642,9 +674,7 @@ class merge[T1, T2](Iterable):
             solved = self.solver_unMergeable()
             if solved:
                 return self
-        elif (
-            diffType == "dictionary_item_added" or diffType == "dictionary_item_removed"
-        ):
+        elif diffType and diffType.endswith(("_added", "_removed")):
             self.solver_add_remove()
             return self
         elif diffType == "type_changes":
