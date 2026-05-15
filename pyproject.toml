@@ -19,7 +19,7 @@ keywords = ["config", "json", "jsonc", "hjson", "round-trip", "comment", "deepdi
 name = "jsonc_sdict"
 readme = "README.md"
 requires-python = ">=3.13"
-version = "0.2.20260503"
+version = "0.2.20260514"
 
 [[project.authors]]
 email = "nolca@qq.com"
@@ -29,7 +29,7 @@ name = "nolca"
 file = "LICENSE"
 
 [project.optional-dependencies]
-dev = ["pytest", "hjson"]
+dev = ["pytest", "hjson", "pydantic"]
 
 [project.urls]
 Download = "http://github.com/AClon314/jsonc-sdict/releases"

@@ -70,3 +70,25 @@ def test_merge_dictDict():
         "k": "v",
     }
     assert are_equal(merged, should)
+
+
+def test_merge_dictionary_item_removed_respects_container_preference():
+    old = {"api": {"groupId": {"projectId_1": {"": {"title": "XX项目"}}}}}
+    new = {"api": {}}
+
+    keep_old = merge((old, new), mergeable=merge.mergeable_prefer_old).solve_all().merged
+    keep_new = merge((old, new), mergeable=merge.mergeable_prefer_new).solve_all().merged
+
+    assert keep_old == old
+    assert keep_new == new
+
+
+def test_merge_dictionary_item_added_respects_container_preference():
+    old = {"api": {}}
+    new = {"api": {"groupId": {"projectId_1": {"": {"title": "XX项目"}}}}}
+
+    keep_old = merge((old, new), mergeable=merge.mergeable_prefer_old).solve_all().merged
+    keep_new = merge((old, new), mergeable=merge.mergeable_prefer_new).solve_all().merged
+
+    assert keep_old == old
+    assert keep_new == new

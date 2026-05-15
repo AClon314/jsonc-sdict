@@ -520,8 +520,6 @@ class merge[T1, T2](Iterable):
         """mergeable merge"""
         assert root is not None
         assert node is not None
-        if mergeable is None:
-            mergeable = self.env.mergeable
         if diffType is None:
             diffType = self.env.diffType
         if diffType is None:
@@ -531,24 +529,7 @@ class merge[T1, T2](Iterable):
         undef_t2 = isNotPresent(node.t2)
         if undef_t1 and undef_t2:
             raise ValueError("node.t1 and node.t2 both NotPresent")
-        hit = False
-        if mergeable and not hit:
-            _node = node
-            if diffType.endswith("_added"):
-                # d.keypath=['k'] <class 'deepdiff.helper.NotPresent'> d.t1=not present   <class 'str'> d.t2='v'
-                keypath = _node.keypath
-                _node = _node.up
-                _node.keypath = keypath[:-1]
-            for types, order in mergeable.items():
-                hit_t1 = isType(_node.t1, types)
-                hit_t2 = isType(_node.t2, types)
-                if hit := (hit_t1 or hit_t2):
-                    Log.debug("⚽ hit mergeable types=%s", types)
-                    break
-        if not hit:
-            raise ValueError(
-                f"Not hit any mergeable rule, try...catch manually, or enhance your {mergeable=} for this data={node}"
-            )
+        types, order = self._match_mergeable(node, mergeable, log_name="mergeable")
         if order == "del":
             self.del_item(root, node)
         elif order == "":
@@ -564,6 +545,87 @@ class merge[T1, T2](Iterable):
             raise ValueError(f"invalid {{{types}:{order}}} from {mergeable=}")
         return self
 
+    @_inject_args
+    def solver_add_remove(
+        self,
+        root: DeepDiff | None = None,
+        node: DeepDiff | None = None,
+        *,
+        mergeable: _Type_MergeableDict | None = None,
+        diffType: Type_DiffReport | None = None,
+        **env,
+    ) -> Self:
+        assert root is not None
+        assert node is not None
+        if diffType is None:
+            diffType = self.env.diffType
+        if diffType is None:
+            raise ValueError("need `diffType` keyword arg")
+        if not diffType.endswith(("_added", "_removed")):
+            raise ValueError(f"unsupported diffType={diffType}")
+
+        parent = node.up
+        self._set_keypath(parent)
+        item_added = diffType.endswith("_added")
+        item_removed = diffType.endswith("_removed")
+        parent.t1 = self.get_item(root.t1, parent)
+        parent.t2 = self.get_item(root.t2, parent)
+
+        undef_t1 = isNotPresent(node.t1)
+        undef_t2 = isNotPresent(node.t2)
+        if undef_t1 and undef_t2:
+            raise ValueError("node.t1 and node.t2 both NotPresent")
+        types, order = self._match_mergeable(
+            parent, mergeable, log_name="add/remove mergeable"
+        )
+        primary_order = self._primary_order(order)
+        if item_removed and primary_order == "old":
+            return self
+        if item_removed and primary_order == "new":
+            self.del_item(root, node)
+            return self
+        if item_added and primary_order == "old":
+            return self
+        if item_added and primary_order == "new":
+            self.set_item(root, node)
+            return self
+        if order == "del":
+            self.del_item(root, node)
+        elif order == "":
+            self.set_item(root, parent, parent.t1.__class__())
+        elif order == "old":
+            pass
+        elif order == "new" or (undef_t1 and "new" in order):  # type: ignore
+            self.set_item(root, node)
+        elif "^" in order:  # type: ignore
+            self.solver_intersect(root, parent, order=order, diffType="values_changed")
+        else:
+            raise ValueError(f"invalid {{{types}:{order}}} from {mergeable=}")
+        return self
+
+    def _match_mergeable(
+        self,
+        node: DeepDiff | DiffLevel,
+        mergeable: _Type_MergeableDict | None = None,
+        *,
+        log_name: str = "mergeable",
+    ) -> tuple[IsType, _Type_MergeOrder | _Type_MergeEnd]:
+        if mergeable is None:
+            mergeable = self.env.mergeable
+        for types, order in mergeable.items():
+            hit_t1 = isType(node.t1, types)
+            hit_t2 = isType(node.t2, types)
+            if hit_t1 or hit_t2:
+                Log.debug("⚽ hit %s types=%s", log_name, types)
+                return types, order
+        raise ValueError(
+            f"Not hit any mergeable rule, try...catch manually, or enhance your {mergeable=} for this data={node}"
+        )
+
+    @staticmethod
+    def _primary_order(order: _Type_MergeOrder | _Type_MergeEnd) -> str:
+        return cast(str, order).split(",", 1)[0]
+
     def solve_each(self) -> Self:
         """the default solver, consists of other solvers
         ps: `merged` result will **degrade** to basic types: list or dict, but you can use:
@@ -575,11 +637,17 @@ class merge[T1, T2](Iterable):
         ```"""
         if not self._iter_started:
             next(self)
-        if self.env.diffType == "values_changed":
+        diffType = self.env.diffType
+        if diffType == "values_changed":
             solved = self.solver_unMergeable()
             if solved:
                 return self
-        elif self.env.diffType == "type_changes":
+        elif (
+            diffType == "dictionary_item_added" or diffType == "dictionary_item_removed"
+        ):
+            self.solver_add_remove()
+            return self
+        elif diffType == "type_changes":
             self.solver_unMergeable()
             Log.warning("""you can handle "type_changes" case manually:
 1. If you want your class to be merged correctly, it must be recognized as one of the following types: Mapping (dict), Sequence (list), or Set.
@@ -593,7 +661,7 @@ for gen in merge(...):
         gen.solvers_XXX()
 ```""")
             return self
-        elif self.env.diffType == "repetition_change":
+        elif diffType == "repetition_change":
             raise _TODO
         self.solver_mergeable()
         return self

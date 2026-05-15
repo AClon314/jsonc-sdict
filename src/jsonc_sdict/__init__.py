@@ -31,5 +31,6 @@ from .jsonc import (
     hjsonDict,
     CompactJSONEncoder,
 )
+from .GetSetDel import gets, get1, set1
 from .Sdict import sdict, dfs
 from .Merge import merge
