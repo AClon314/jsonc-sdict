@@ -13,13 +13,14 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: 3.15",
 ]
-dependencies = ["deepdiff ~=8.6", "argcomplete ~=3.6", "tree-sitter >=0.25", "tree-sitter-json >=0.24", "fast-diff-match-patch ~=2.1"]
-description = "keep comment(round-trip) when read & write jsonc/hjson,  sdict with extra context(parent/keypath), weakList & OrderedWeakSet"
-keywords = ["config", "json", "jsonc", "hjson", "round-trip", "comment", "deepdiff", "deepmerge", "benedict", "weakList", "OrderedWeakSet"]
+#  TODO: string merge in v0.3? "fast-diff-match-patch ~=2.1"
+dependencies = ["deepdiff ~=8.6", "tree-sitter ~=0.25", "tree-sitter-json ~=0.24"]
+description = "keep comment(round-trip) when read & write jsonc/hjson,  sdict with extra context(parent/keypath)"
+keywords = ["config", "json", "jsonc", "hjson", "round-trip", "comment", "deepdiff", "deepmerge", "benedict"]
 name = "jsonc_sdict"
 readme = "README.md"
 requires-python = ">=3.13"
-version = "0.2.20260514"
+version = "0.2.20260516"
 
 [[project.authors]]
 email = "nolca@qq.com"
@@ -29,7 +30,8 @@ name = "nolca"
 file = "LICENSE"
 
 [project.optional-dependencies]
-dev = ["pytest", "hjson", "pydantic"]
+dev = ["jsonc-sdict[full]", "pytest"]
+full = ["argcomplete ~=3.6", "pydantic ~=2.12.5", "desktop-notifier ~=6.2.0", "hjson ~=3.1.0"]
 
 [project.urls]
 Download = "http://github.com/AClon314/jsonc-sdict/releases"

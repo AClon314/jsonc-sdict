@@ -3,20 +3,20 @@
 Quick usage:
 ```python
 import hjson
-from jsonc_sdict import jsoncDict, Within, NONE
+from jsonc_sdict import jsoncDict, CommentIn, NONE
 
 jc = jsoncDict('{"a": 1}', loads=hjson.loads, dumps=hjson.dumps)
 jc["a"] = 2
-jc[Within(NONE, "a")] = "// before a"
+jc[CommentIn(NONE, "a")] = "// before a"
 print(jc.full)
 ```
 
 Advanced usage:
 ```python
-jc[Within("a")] = {
-    Within("k", ":"): "/* key slot */",
-    Within(":", "v"): "/* value slot */",
-    Within("v", ","): "/* tail slot */",
+jc[CommentIn("a")] = {
+    CommentIn("k", ":"): "/* key slot */",
+    CommentIn(":", "v"): "/* value slot */",
+    CommentIn("v", ","): "/* tail slot */",
 }
 print(jc.full)
 ```
@@ -26,7 +26,7 @@ from .share import NONE, UNSET
 from .jsonc import (
     json_dumps,
     is_comment,
-    Within,
+    CommentIn,
     jsoncDict,
     hjsonDict,
     CompactJSONEncoder,

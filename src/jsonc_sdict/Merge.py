@@ -40,9 +40,9 @@ from deepdiff import DeepDiff as _DeepDiff
 from deepdiff.diff import DeepDiffProtocol as _DeepDiffProtocol
 from deepdiff.operator import BaseOperator
 from deepdiff.helper import NotPresent
-from deepdiff.model import DiffLevel
+# from deepdiff.model import DiffLevel
 
-from jsonc_sdict.GetSetDel import del1, get1, gets, set1
+from jsonc_sdict.GetSetDel import del1, get1, set1
 from jsonc_sdict.share import (
     PS,
     TV,
@@ -614,8 +614,8 @@ class merge[T1, T2](Iterable):
     def _apply_add_remove(
         self,
         root: DeepDiff,
-        node: DeepDiff | DiffLevel,
-        parent: DeepDiff | DiffLevel,
+        node: DeepDiff,
+        parent: DeepDiff,
         diffType: Type_DiffReport,
     ) -> None:
         if diffType == "dictionary_item_added" or diffType == "attribute_added":
@@ -637,7 +637,7 @@ class merge[T1, T2](Iterable):
 
     def _match_mergeable(
         self,
-        node: DeepDiff | DiffLevel,
+        node: DeepDiff,
         mergeable: _Type_MergeableDict | None = None,
         *,
         log_name: str = "mergeable",
@@ -896,7 +896,7 @@ for gen in merge(...):
             )
         return self.merged
 
-    def _set_keypath(self, node: DeepDiff | DiffLevel | None = None) -> list:
+    def _set_keypath(self, node: DeepDiff | None = None) -> list:
         if node is None:
             node = self.node
         node.keypath = tuple(node.path(output_format="list"))

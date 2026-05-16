@@ -13,7 +13,6 @@ Round-trip comments for JSONC/HJSON, with dict-like APIs for config editing.
 
 - Keep comments on read and write (`loads` → edit → `body` / `full`).
 - Work with nested structures via `sdict` ≈ [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
-- Use weak-reference ordered containers via `weakList`/`OrderedWeakSet`.
 
 > Comments are data too, just like codes are data too by John von Neumann
 
@@ -25,7 +24,7 @@ Round-trip comments for JSONC/HJSON, with dict-like APIs for config editing.
 ### Install
 
 ```bash
-pip install jsonc-sdict
+pip install "jsonc-sdict[full]"
 ```
 
 For local development:
@@ -38,7 +37,7 @@ pip install -e ".[dev]"
 
 ```python
 import hjson
-from jsonc_sdict import jsoncDict, Within, NONE
+from jsonc_sdict import jsoncDict, CommentIn, NONE
 
 raw = """
 {
@@ -49,7 +48,7 @@ raw = """
 
 jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
 jc["b"] = 3
-jc[Within(NONE, "a")] = "// inserted before a"
+jc[CommentIn(NONE, "a")] = "// inserted before a"
 
 print(jc.full)
 ```
@@ -58,7 +57,7 @@ print(jc.full)
 
 ```python
 import hjson
-from jsonc_sdict import jsoncDict, Within, NONE
+from jsonc_sdict import jsoncDict, CommentIn, NONE
 
 raw = """
 // header
@@ -70,11 +69,11 @@ raw = """
 """.strip()
 
 jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
-jc[Within(NONE, "a")] = "// before a"
-jc[Within("a")] = {
-    Within("k", ":"): "/* key slot */",
-    Within(":", "v"): "/* value slot */",
-    Within("v", ","): "/* tail slot */",
+jc[CommentIn(NONE, "a")] = "// before a"
+jc[CommentIn("a")] = {
+    CommentIn("k", ":"): "/* key slot */",
+    CommentIn(":", "v"): "/* value slot */",
+    CommentIn("v", ","): "/* tail slot */",
 }
 
 print(jc.full)
@@ -82,20 +81,20 @@ print(jc.full)
 
 ### Comment model
 
-`jsoncDict.comments` stores comment positions with `Within(...)` keys.
+`jsoncDict.comments` stores comment positions with `CommentIn(...)` keys.
 
-- `Within(left, right)` means a comment between two logical items.
-- `Within(key)` means comments attached to one pair's internal slots.
-- Slot comments use a dict with `Within("k", ":")`, `Within(":", "v")`, `Within("v", ",")`.
-- `Within(NONE, first_key)` and `Within(last_key, NONE)` handle boundary comments.
+- `CommentIn(left, right)` means a comment between two logical items.
+- `CommentIn(key)` means comments attached to one pair's internal slots.
+- Slot comments use a dict with `CommentIn("k", ":")`, `CommentIn(":", "v")`, `CommentIn("v", ",")`.
+- `CommentIn(NONE, first_key)` and `CommentIn(last_key, NONE)` handle boundary comments.
 
 Examples:
 
 ```python
-jc.comments[Within("a", "b")] = "// between a and b"
-jc.comments[Within("b")] = {
-    Within("k", ":"): "/* before colon */",
-    Within(":", "v"): "/* before value */",
+jc.comments[CommentIn("a", "b")] = "// between a and b"
+jc.comments[CommentIn("b")] = {
+    CommentIn("k", ":"): "/* before colon */",
+    CommentIn(":", "v"): "/* before value */",
 }
 ```
 
@@ -134,7 +133,7 @@ LOG=DEBUG pytest -q
 - `jsoncDict.loads()` parses comments with tree-sitter and stores them into `comments`.
 - `jsoncDict.body` renders the current value with comments restored.
 - `jsoncDict.full` returns `header + body + footer`.
-- `Within(key)` comments are stored as slot maps, not raw strings, so key/colon/value/comma placement stays explicit.
+- `CommentIn(key)` comments are stored as slot maps, not raw strings, so key/colon/value/comma placement stays explicit.
 
 #### sdict (common pitfalls)
 
@@ -153,9 +152,9 @@ LOG=DEBUG pytest -q
 
 ### json loads()
 
-| pypi                                                                                                                                                         | commits                                                                                                                                                                                                                                           | issues                                                                                                                                                                                                                     | about                                                               | lack                                                                                                                                                                    |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [spyoungtech/json-five ![⭐](https://img.shields.io/github/stars/spyoungtech/json-five?style=flat&label=⭐)](https://github.com/spyoungtech/json-five)       | [![🕒](https://img.shields.io/github/commit-activity/t/spyoungtech/json-five/main?label=🕒) ![LAST🕒](https://img.shields.io/github/last-commit/spyoungtech/json-five/main?label=🕒)](https://github.com/spyoungtech/json-five/commits)           | [![🎯](https://img.shields.io/github/issues/spyoungtech/json-five?label=⁉️) ![🎯close](https://img.shields.io/github/issues-closed/spyoungtech/json-five?label=❔)](https://github.com/spyoungtech/json-five/issues)       | Python JSON5 parser with **round-trip** preservation of comments    | can keep comment, [but in AST-tree style with lots of re-defined concepts](https://json-five.readthedocs.io/en/latest/comments.html) (e.g: `BlockComment`/`wsc_before`) |
+| pypi                                                                                                                                                         | commits                                                                                                                                                                                                                                           | issues                                                                                                                                                                                                                     | about                                                               | lack                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| [spyoungtech/json-five ![⭐](https://img.shields.io/github/stars/spyoungtech/json-five?style=flat&label=⭐)](https://github.com/spyoungtech/json-five)       | [![🕒](https://img.shields.io/github/commit-activity/t/spyoungtech/json-five/main?label=🕒) ![LAST🕒](https://img.shields.io/github/last-commit/spyoungtech/json-five/main?label=🕒)](https://github.com/spyoungtech/json-five/commits)           | [![🎯](https://img.shields.io/github/issues/spyoungtech/json-five?label=⁉️) ![🎯close](https://img.shields.io/github/issues-closed/spyoungtech/json-five?label=❔)](https://github.com/spyoungtech/json-five/issues)       | Python JSON5 parser with **round-trip** preservation of comments    | can keep comment [in another API style](https://json-five.readthedocs.io/en/latest/comments.html) (e.g: `BlockComment`/`wsc_before`) |
 | [tusharsadhwani/json5kit ![⭐](https://img.shields.io/github/stars/tusharsadhwani/json5kit?style=flat&label=⭐)](https://github.com/tusharsadhwani/json5kit) | [![🕒](https://img.shields.io/github/commit-activity/t/tusharsadhwani/json5kit/master?label=🕒) ![LAST🕒](https://img.shields.io/github/last-commit/tusharsadhwani/json5kit/master?label=🕒)](https://github.com/tusharsadhwani/json5kit/commits) | [![🎯](https://img.shields.io/github/issues/tusharsadhwani/json5kit?label=⁉️) ![🎯close](https://img.shields.io/github/issues-closed/tusharsadhwani/json5kit?label=❔)](https://github.com/tusharsadhwani/json5kit/issues) | A **Roundtrip** parser and CST for JSON, JSONC and JSON5.           |
 | [dpranke/pyjson5 ![⭐](https://img.shields.io/github/stars/dpranke/pyjson5?style=flat&label=⭐)](https://github.com/dpranke/pyjson5)                         | [![🕒](https://img.shields.io/github/commit-activity/t/dpranke/pyjson5/main?label=🕒) ![LAST🕒](https://img.shields.io/github/last-commit/dpranke/pyjson5/main?label=🕒)](https://github.com/dpranke/pyjson5/commits)                             | [![🎯](https://img.shields.io/github/issues/dpranke/pyjson5?label=⁉️) ![🎯close](https://img.shields.io/github/issues-closed/dpranke/pyjson5?label=❔)](https://github.com/dpranke/pyjson5/issues)                         | A Python implementation of the JSON5 data format                    |
 | [austinyu/ujson5 ![⭐](https://img.shields.io/github/stars/austinyu/ujson5?style=flat&label=⭐)](https://github.com/austinyu/ujson5)                         | [![🕒](https://img.shields.io/github/commit-activity/t/austinyu/ujson5/main?label=🕒) ![LAST🕒](https://img.shields.io/github/last-commit/austinyu/ujson5/main?label=🕒)](https://github.com/austinyu/ujson5/commits)                             | [![🎯](https://img.shields.io/github/issues/austinyu/ujson5?label=⁉️) ![🎯close](https://img.shields.io/github/issues-closed/austinyu/ujson5?label=❔)](https://github.com/austinyu/ujson5/issues)                         | A fast JSON5 encoder/decoder for Python                             |

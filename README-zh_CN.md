@@ -13,7 +13,6 @@
 
 - 读写都保留注释（`loads` → 修改 → `body` / `full`）。
 - 通过 `sdict` 处理嵌套结构更方便，等价于 [deepmerge](https://github.com/toumorokoshi/deepmerge) + [deepdiff](https://github.com/seperman/deepdiff) + [benedict](https://github.com/fabiocaccamo/python-benedict)
-- 提供弱引用有序容器 `weakList` / `OrderedWeakSet`。
 
 > 注释也是数据，就如冯・诺依曼，代码也是数据
 
@@ -25,7 +24,7 @@
 ### 安装
 
 ```bash
-pip install jsonc-sdict
+pip install "jsonc-sdict[full]"
 ```
 
 本地开发安装：
@@ -38,7 +37,7 @@ pip install -e ".[dev]"
 
 ```python
 import hjson
-from jsonc_sdict import jsoncDict, Within, NONE
+from jsonc_sdict import jsoncDict, CommentIn, NONE
 
 raw = """
 {
@@ -49,7 +48,7 @@ raw = """
 
 jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
 jc["b"] = 3
-jc[Within(NONE, "a")] = "// inserted before a"
+jc[CommentIn(NONE, "a")] = "// inserted before a"
 
 print(jc.full)
 ```
@@ -58,7 +57,7 @@ print(jc.full)
 
 ```python
 import hjson
-from jsonc_sdict import jsoncDict, Within, NONE
+from jsonc_sdict import jsoncDict, CommentIn, NONE
 
 raw = """
 // header
@@ -70,11 +69,11 @@ raw = """
 """.strip()
 
 jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
-jc[Within(NONE, "a")] = "// before a"
-jc[Within("a")] = {
-    Within("k", ":"): "/* key slot */",
-    Within(":", "v"): "/* value slot */",
-    Within("v", ","): "/* tail slot */",
+jc[CommentIn(NONE, "a")] = "// before a"
+jc[CommentIn("a")] = {
+    CommentIn("k", ":"): "/* key slot */",
+    CommentIn(":", "v"): "/* value slot */",
+    CommentIn("v", ","): "/* tail slot */",
 }
 
 print(jc.full)
@@ -82,20 +81,20 @@ print(jc.full)
 
 ### 注释模型
 
-`jsoncDict.comments` 使用 `Within(...)` 记录注释位置。
+`jsoncDict.comments` 使用 `CommentIn(...)` 记录注释位置。
 
-- `Within(left, right)` 表示两个逻辑项之间的注释。
-- `Within(key)` 表示挂在一个 pair 内部槽位上的注释。
-- 槽位注释使用字典，键为 `Within("k", ":")`、`Within(":", "v")`、`Within("v", ",")`。
-- `Within(NONE, first_key)` 和 `Within(last_key, NONE)` 处理边界注释。
+- `CommentIn(left, right)` 表示两个逻辑项之间的注释。
+- `CommentIn(key)` 表示挂在一个 pair 内部槽位上的注释。
+- 槽位注释使用字典，键为 `CommentIn("k", ":")`、`CommentIn(":", "v")`、`CommentIn("v", ",")`。
+- `CommentIn(NONE, first_key)` 和 `CommentIn(last_key, NONE)` 处理边界注释。
 
 示例：
 
 ```python
-jc.comments[Within("a", "b")] = "// between a and b"
-jc.comments[Within("b")] = {
-    Within("k", ":"): "/* before colon */",
-    Within(":", "v"): "/* before value */",
+jc.comments[CommentIn("a", "b")] = "// between a and b"
+jc.comments[CommentIn("b")] = {
+    CommentIn("k", ":"): "/* before colon */",
+    CommentIn(":", "v"): "/* before value */",
 }
 ```
 
@@ -134,7 +133,7 @@ LOG=DEBUG pytest -q
 - `jsoncDict.loads()` 使用 tree-sitter 解析并把注释写入 `comments`。
 - `jsoncDict.body` 把注释回填到序列化结果。
 - `jsoncDict.full` 等于 `header + body + footer`。
-- `Within(key)` 不再存原始字符串，而是存槽位字典，便于精确恢复 `k:`、`:v`、`v,`。
+- `CommentIn(key)` 不再存原始字符串，而是存槽位字典，便于精确恢复 `k:`、`:v`、`v,`。
 
 #### sdict（易混淆点/坑）
 
@@ -239,3 +238,10 @@ Rust 社区更倾向使用 serde + 自定义 diff，或类似工具，但 turbod
   最后更新: 活跃
 
 - **Julia** → **DeepDiffs.jl** (较小众)
+
+### v0.3 TODO 新功能
+
+- [ ] 自动处理CommentIn冲突，目前v0.2手动处理。insert comments CommentIn(...) solve conflict?
+- [ ] 追踪&备份配置文件(yadm git for linux, fallback rename&copy for windows)
+- [ ] 字符串类git合并(str merge based on fast-diff-match-patch)
+- [ ] jmespath 兼容性? ~~jsonpath~~

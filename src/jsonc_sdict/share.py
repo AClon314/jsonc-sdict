@@ -325,15 +325,6 @@ def Help(Else=False) -> str:
     return out.strip()
 
 
-def try_autocomplete(parser: ArgumentParser):
-    try:
-        import argcomplete
-
-        argcomplete.autocomplete(parser)
-    except ImportError as e:
-        Log.warning("skip argcomplete", exc_info=e)
-
-
 PS = ParamSpec("PS")
 TV = TypeVar("TV")
 
