@@ -353,7 +353,11 @@ def test_jsonc_dumps_restores_slot_and_between_comments():
         CommentIn("v", ","): " /*vc*/",
     }
     assert jc.comments[CommentIn("b", "list")] == "\n  // list item\n  "
-    assert list(jc["list"].items()) == [(0, 0), (CommentIn(0, 1), "\n    // 1,\n    "), (1, 2)]
+    assert list(jc["list"].items()) == [
+        (0, 0),
+        (CommentIn(0, 1), "\n    // 1,\n    "),
+        (1, 2),
+    ]
 
     body = jc.body
 
@@ -377,5 +381,10 @@ def test_jsonc_dumps_formats_synthetic_comments_after_edit():
 @pytest.mark.parametrize("In", ("test/old.jsonc", "test/old-empty.jsonc"))
 def test_round_trip(In: str):
     text = Path(In).read_text()
-    jc = jsoncDict(text, loads=hjson.loads)
+    jc = jsoncDict(text, loads=hjson.loads, dumps=json_dumps)
     assert jc.full == text, {"jc.full": jc.full, "text": text}
+
+
+# def test_deep_tree():
+#     # TODO: 获取当前目录树 tree
+#     pass

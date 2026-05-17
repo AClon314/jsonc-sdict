@@ -23,11 +23,14 @@
 
 ```bash
 pip install "jsonc-sdict[full]"
+# pip install "jsonc-sdict[full] @ git+https://github.com/AClon314/jsonc-sdict.git"
 ```
 
 本地开发安装：
 
 ```bash
+git clone https://github.com/AClon314/jsonc-sdict.git
+cd jsonc-sdict
 pip install -e ".[dev]"
 ```
 
@@ -291,7 +294,8 @@ Rust 社区更倾向使用 serde + 自定义 diff，或类似工具，但 turbod
 
 ### v0.3 TODO 新功能
 
-- [ ] 自动处理CommentIn冲突，目前v0.2手动处理。insert comments CommentIn(...) solve conflict?
+- [ ] 自动处理CommentIn冲突，目前v0.2手动处理。insert/rename/sort/delete 时的注释迁移规则，以及 inline comment 的列对齐策略。insert comments CommentIn(...) solve conflict?
 - [ ] 追踪&备份配置文件(yadm git for linux, fallback rename&copy for windows)
 - [ ] 字符串类git合并(str merge based on fast-diff-match-patch)
+- [ ] pydantic docstring 自动插入为注释
 - [ ] jmespath 兼容性? ~~jsonpath~~

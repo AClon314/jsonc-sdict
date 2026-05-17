@@ -23,11 +23,14 @@ Round-trip comments for JSONC/HJSON, with dict-like APIs for config editing.
 
 ```bash
 pip install "jsonc-sdict[full]"
+# pip install "jsonc-sdict[full] @ git+https://github.com/AClon314/jsonc-sdict.git"
 ```
 
 For local development:
 
 ```bash
+git clone https://github.com/AClon314/jsonc-sdict.git
+cd jsonc-sdict
 pip install -e ".[dev]"
 ```
 

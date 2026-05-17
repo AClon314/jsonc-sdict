@@ -11,9 +11,11 @@ from pydantic import BaseModel, PrivateAttr
 from jsonc_sdict.jsonc import jsoncDict
 
 
-def _copy_comment_value(value: Any) -> Any:
+def _normalize_comment_value(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return dict(value)
+        return {key: _normalize_comment_value(item) for key, item in value.items()}
+    if isinstance(value, str):
+        return value.strip()
     return value
 
 
@@ -22,7 +24,7 @@ def _copy_comments_flat(
 ) -> dict[tuple[Any, ...], dict[Any, Any]]:
     return {
         tuple(path): {
-            key: _copy_comment_value(value) for key, value in comments.items()
+            key: _normalize_comment_value(value) for key, value in comments.items()
         }
         for path, comments in comments_flat.items()
     }
@@ -58,7 +60,7 @@ def replay_comments(
         if not isinstance(owner, jsoncDict):
             continue
         owner.comments.update(
-            {key: _copy_comment_value(value) for key, value in comments.items()}
+            {key: _normalize_comment_value(value) for key, value in comments.items()}
         )
     return jc
 
