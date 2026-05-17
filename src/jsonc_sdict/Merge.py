@@ -789,6 +789,19 @@ for gen in merge(...):
 
         Usage:
         ```python
+        from functools import partial
+        from jsonc_sdict import get1, merge
+
+        old = {"items": [{"id": 1, "name": "old"}]}
+        new = {"items": [{"id": 1, "name": "new"}, {"id": 2, "name": "add"}]}
+
+        result = merge(
+            (old, new),
+            dictDict={"value_of_idKey": partial(get1.item, keys="id")},
+            unMergeable="new",
+        )()
+
+        # or handle each conflict manually
         for _ in (self := merge((old, new))):
             if ...:
                 NEW = self.new + "you can manually solve each conflict"
@@ -796,9 +809,6 @@ for gen in merge(...):
             else:
                 self.solve_each()
         result = self.merged
-
-        # or just use default solver to get merged result
-        result = merge((old,new)).solve_all().merged
         ```
 
         Args:

@@ -47,11 +47,11 @@ def test_loads_collects_header_footer_and_comments():
 
     assert jd.header.startswith("/** aclon314 {} */")
     assert jd.footer == "\n// eof"
-    assert jd.comments[CommentIn(NONE, "0")] == '// {\n  // "": null,'
-    assert jd.comments[CommentIn("6//")] == {CommentIn(":", "v"): "/* 6 */"}
+    assert jd.comments[CommentIn(NONE, "0")] == ' // {\n  // "": null,\n  '
+    assert jd.comments[CommentIn("6//")] == {CommentIn(":", "v"): " /* 6 */ "}
     assert CommentIn(0, 1) not in jd.comments
     assert isinstance(ls, jsoncDict)
-    assert ls.comments[CommentIn(0, 1)] == "// 1,"
+    assert ls.comments[CommentIn(0, 1)] == "\n    // 1,\n    "
 
 
 def test_comments_collects_nested_comment_maps():
@@ -62,8 +62,8 @@ def test_comments_collects_nested_comment_maps():
 
     assert () in comments
     assert ("list",) in comments
-    assert comments.get(())[CommentIn("6//")] == {CommentIn(":", "v"): "/* 6 */"}
-    assert comments.get(("list",))[CommentIn(0, 1)] == "// 1,"
+    assert comments.get(())[CommentIn("6//")] == {CommentIn(":", "v"): " /* 6 */ "}
+    assert comments.get(("list",))[CommentIn(0, 1)] == "\n    // 1,\n    "
 
 
 def test_jsoncdict_preserves_current_depth_order():
@@ -72,13 +72,13 @@ def test_jsoncdict_preserves_current_depth_order():
 
     items = list(jd.items())
 
-    assert items[0] == (CommentIn(NONE, "0"), '// {\n  // "": null,')
+    assert items[0] == (CommentIn(NONE, "0"), ' // {\n  // "": null,\n  ')
     assert items[1] == ("0", 0)
-    assert items[2] == (CommentIn("0", "2"), '// 0\n  // "1": 1, /* 1 */')
+    assert items[2] == (CommentIn("0", "2"), ' // 0\n  // "1": 1, /* 1 */\n  ')
     assert items[3] == ("2", 2)
     assert is_comment(items[0][0])
     assert not is_comment(items[1][0])
-    assert jd.mixed()[CommentIn("6//")] == {CommentIn(":", "v"): "/* 6 */"}
+    assert jd.mixed()[CommentIn("6//")] == {CommentIn(":", "v"): " /* 6 */ "}
 
 
 def test_jsoncdict_recurses_into_nested_jsoncdict():
@@ -89,7 +89,7 @@ def test_jsoncdict_recurses_into_nested_jsoncdict():
 
     assert isinstance(mixed_list, jsoncDict)
     assert mixed_list[0] == 0
-    assert mixed_list[CommentIn(0, 1)] == "// 1,"
+    assert mixed_list[CommentIn(0, 1)] == "\n    // 1,\n    "
     assert mixed_list[1] == "2"
 
 
@@ -211,7 +211,7 @@ def test_apply_permanently_removes_hidden_keys_recursively():
     )
     jd["node"].comments["hide"] = {"reason": "runtime hidden"}
 
-    jd.clear()
+    jd.del_commented_data()
 
     assert jd.data["node"]["keep"] == 1
     assert "hide" not in jd.data["node"]
@@ -293,7 +293,7 @@ def test_children_resync_after_data_key_rename():
     jd.data.rename_key("list", "items")
 
     assert jd.mixed()["items"] is child
-    assert child.comments[CommentIn(0, 1)] == "// 1,"
+    assert child.comments[CommentIn(0, 1)] == "\n    // 1,\n    "
 
 
 def test_jsonc_body_restore():
@@ -346,18 +346,36 @@ def test_jsonc_dumps_restores_slot_and_between_comments():
     raw = '{\n  // head\n  "a" /*k*/ : /*cv*/ 1 /*vc*/,\n  "b": 2,\n  // list item\n  "list": [\n    0,\n    // 1,\n    2\n  ]\n}'
     jc = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps)
 
-    assert jc.comments[CommentIn(NONE, "a")] == "// head"
+    assert jc.comments[CommentIn(NONE, "a")] == "\n  // head\n  "
     assert jc.comments[CommentIn("a")] == {
-        CommentIn("k", ":"): "/*k*/",
-        CommentIn(":", "v"): "/*cv*/",
-        CommentIn("v", ","): "/*vc*/",
+        CommentIn("k", ":"): " /*k*/ ",
+        CommentIn(":", "v"): " /*cv*/ ",
+        CommentIn("v", ","): " /*vc*/",
     }
-    assert jc.comments[CommentIn("b", "list")] == "// list item"
-    assert list(jc["list"].items()) == [(0, 0), (CommentIn(0, 1), "// 1,"), (1, 2)]
+    assert jc.comments[CommentIn("b", "list")] == "\n  // list item\n  "
+    assert list(jc["list"].items()) == [(0, 0), (CommentIn(0, 1), "\n    // 1,\n    "), (1, 2)]
 
     body = jc.body
 
-    assert '"a" /*k*/ :  /*cv*/ 1 /*vc*/' in body
-    assert '\n  // head\n  "a"' in body
-    assert '\n  // list item\n  "list"' in body
-    assert "\n    // 1,\n    2\n" in body
+    assert body == raw
+
+
+def test_jsonc_dumps_formats_synthetic_comments_after_edit():
+    raw = '{\n  // head\n  "a" /*k*/ : /*cv*/ 1 /*vc*/,\n  "b": 2,\n  // list item\n  "list": [\n    0,\n    // 1,\n    2\n  ]\n}'
+    jc = jsoncDict(raw, loads=hjson.loads, dumps=json_dumps)
+
+    jc["b"] = 3
+
+    body = jc.body
+
+    assert '"b": 3,' in body
+    assert "\n  // head\n  " in body
+    assert '"a" /*k*/ : /*cv*/ 1 /*vc*/' in body
+    assert "\n    // 1,\n    " in body
+
+
+@pytest.mark.parametrize("In", ("test/old.jsonc", "test/old-empty.jsonc"))
+def test_round_trip(In: str):
+    text = Path(In).read_text()
+    jc = jsoncDict(text, loads=hjson.loads)
+    assert jc.full == text, {"jc.full": jc.full, "text": text}

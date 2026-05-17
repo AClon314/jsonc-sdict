@@ -1,24 +1,30 @@
 #!/bin/env python3
 """Round-trip JSONC/HJSON editing with dict-like APIs.
 
-Quick usage:
+Core usage:
 ```python
-import hjson
 from jsonc_sdict import jsoncDict, CommentIn, NONE
 
-jc = jsoncDict('{"a": 1}', loads=hjson.loads, dumps=hjson.dumps)
-jc["a"] = 2
-jc[CommentIn(NONE, "a")] = "// before a"
+jc = jsoncDict(
+    {
+        CommentIn(NONE, "a"): "// before a",
+        "a": 1,
+        CommentIn("a", "b"): "// between a and b",
+        "b": 2,
+    }
+)
+jc[CommentIn("b")] = {CommentIn(":", "v"): "/* before value */"}
+jc["b"] = 3
 print(jc.full)
 ```
 
-Advanced usage:
+JSONC/HJSON text input is also supported:
 ```python
-jc[CommentIn("a")] = {
-    CommentIn("k", ":"): "/* key slot */",
-    CommentIn(":", "v"): "/* value slot */",
-    CommentIn("v", ","): "/* tail slot */",
-}
+import hjson
+from jsonc_sdict import jsoncDict
+
+jc = jsoncDict('{"a": 1}', loads=hjson.loads, dumps=hjson.dumps)
+jc["a"] = 2
 print(jc.full)
 ```
 """
@@ -117,12 +123,14 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
     underlying data container.
 
     Usage:
-    `jsonc()` init -> edit `jc.comments[...]` -> render with `jc.full`
+    init `jsoncDict(...)` -> edit data/comments -> render with `jc.full`
     ```python
-    jc = jsoncDict(my_str, loads=hjson.loads)
+    jc = jsoncDict({"a": 1, "b": 2})
     jc.comments[CommentIn("a", "b")] = "// between a and b"
-    jc.comments[CommentIn("b")] = {"k:": "/* before colon */"}
+    jc.comments[CommentIn("b")] = {CommentIn(":", "v"): "/* before value */"}
     jc.comments[CommentIn("b", NONE)] = "// after b"
+    jc["b"] = 3
+    print(jc.full)
     ```
     """
 
@@ -191,7 +199,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         is_raw_str = isinstance(data, str)
         comments = {}
         if is_raw_str:
-            if cls._loads is None:
+            if getattr(cls, "_loads", None) is None:
                 raise ValueError("missing arg `loads` when `raw` is str")
             obj = cls._loads(data)
         else:
@@ -210,6 +218,10 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             `CommentIn(left, right)`: comment between neighboring items.
             `CommentIn(key)`: comments inside one pair's `k:` / `:v` / `v,` slots.
             `data_key`: runtime-hidden key; skip this data item in `items()`.
+
+        When loaded from raw text, comment values preserve their original surrounding
+        whitespace as much as possible. This fidelity target applies to comment trivia,
+        not to data layout such as whether arrays/objects were originally single-line.
 
         Boundary comments use `NONE`:
         ```
@@ -479,29 +491,42 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         slots[slot] = slots.get(slot, "") + text
         owner.comments[CommentIn(key)] = slots
 
-    def __loads_collect_inner_comment(
+    def __loads_gap_has_comment(
+        self, node: ts.Node, start: int, end: int, *, deep: bool = False
+    ) -> bool:
+        """Check whether one byte slice contains at least one comment node."""
+        children = node.children if not deep else node.named_children
+        return any(
+            child.type == "comment"
+            and child.start_byte >= start
+            and child.end_byte <= end
+            for child in children
+        )
+
+    def __loads_collect_pair_comments(
         self,
         owner: Self,
         node: ts.Node,
-        comment: ts.Node,
         byte: bytes,
-    ) -> bool:
-        """Capture one pair comment when it lives inside the pair node."""
-        if node.type != "pair" or comment.type != "comment":
-            return False
+    ) -> None:
+        """Capture pair-slot gaps verbatim so dumps can splice comment trivia back."""
+        if node.type != "pair":
+            return
         key_node, colon, value = self.__loads_pair_slots(node)
         key = self.__key_from_serialized(owner, self.__loads_pair_key(node))
-        text = byte[comment.start_byte : comment.end_byte].decode()
-        if comment.end_byte <= colon.start_byte:
-            self.__loads_collect_pair_comment(owner, key, CommentIn("k", ":"), text)
-            return True
-        if value is not None and comment.start_byte >= value.start_byte:
-            self.__loads_collect_pair_comment(owner, key, CommentIn("v", ","), text)
-            return True
-        if value is None or comment.end_byte <= value.start_byte:
-            self.__loads_collect_pair_comment(owner, key, CommentIn(":", "v"), text)
-            return True
-        return False
+        slot_ranges: list[tuple[jsoncDict._Type_kvSlot, int, int]] = [
+            (CommentIn("k", ":"), key_node.end_byte, colon.start_byte),
+        ]
+        if value is not None:
+            slot_ranges.append((CommentIn(":", "v"), colon.end_byte, value.start_byte))
+            slot_ranges.append((CommentIn("v", ","), value.end_byte, node.end_byte))
+        else:
+            slot_ranges.append((CommentIn(":", "v"), colon.end_byte, node.end_byte))
+
+        for slot, start, end in slot_ranges:
+            if start >= end or not self.__loads_gap_has_comment(node, start, end):
+                continue
+            self.__loads_collect_pair_comment(owner, key, slot, byte[start:end].decode())
 
     def __loads_consume_pending_as_value_tail(
         self,
@@ -536,30 +561,29 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         """Walk one parsed object/array and assign surrounding comments to logical slots."""
         prev_key = NONE
         prev_item: ts.Node | None = None
-        pending_start: int | None = None
-        pending_end: int | None = None
         index = 0
-        saw_comma_after_prev = False
+        gap_start = container.start_byte + 1
+        saw_comment_in_gap = False
+        close_start = container.end_byte - 1
 
         for child in container.children:
             if child.type == "comment":
-                if pending_start is None:
-                    pending_start = child.start_byte
-                pending_end = child.end_byte
+                saw_comment_in_gap = True
                 continue
             if child.type == ",":
                 if (
-                    pending_start is not None
-                    and pending_end is not None
-                    and container.type == "object"
-                    and not saw_comma_after_prev
+                    saw_comment_in_gap
+                    and prev_item is not None
+                    and prev_item.type == "pair"
+                    and gap_start >= prev_item.end_byte
                 ):
-                    text = byte[pending_start:pending_end].decode()
-                    if self.__loads_consume_pending_as_value_tail(
-                        owner, prev_item, prev_key, None, text
-                    ):
-                        pending_start = pending_end = None
-                saw_comma_after_prev = True
+                    text = byte[gap_start:child.start_byte].decode()
+                    if text:
+                        self.__loads_collect_pair_comment(
+                            owner, prev_key, CommentIn("v", ","), text
+                        )
+                    saw_comment_in_gap = False
+                gap_start = child.end_byte
                 continue
             if not self.__loads_is_item(container, child):
                 continue
@@ -570,18 +594,14 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 if container.type == "object"
                 else index
             )
-            if pending_start is not None and pending_end is not None:
-                text = byte[pending_start:pending_end].decode()
+            if saw_comment_in_gap:
+                text = byte[gap_start:child.start_byte].decode()
                 if text:
                     owner.comments[CommentIn(prev_key, key)] = text
-                pending_start = pending_end = None
+                saw_comment_in_gap = False
 
             if child.type == "pair":
-                for pair_child in child.children:
-                    if pair_child.type == "comment":
-                        self.__loads_collect_inner_comment(
-                            owner, child, pair_child, byte
-                        )
+                self.__loads_collect_pair_comments(owner, child, byte)
             # Pair nodes store the nested container under the `value` field.
             value = child.child_by_field_name("value") or child
             if value.type in ("object", "array"):
@@ -591,17 +611,14 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
             prev_key = key
             prev_item = child
-            saw_comma_after_prev = False
+            gap_start = child.end_byte
             if container.type == "array":
                 index += 1
 
-        if pending_start is not None and pending_end is not None:
-            text = byte[pending_start:pending_end].decode()
-            if not self.__loads_consume_pending_as_value_tail(
-                owner, prev_item, prev_key, None, text
-            ):
-                if text:
-                    owner.comments[CommentIn(prev_key, NONE)] = text
+        if saw_comment_in_gap:
+            text = byte[gap_start:close_start].decode()
+            if text:
+                owner.comments[CommentIn(prev_key, NONE)] = text
 
     def loads(self, raw: str) -> Self:
         """Extract comment layout hints from `raw` into `self.comments`, `header`, and `footer`."""
@@ -630,7 +647,11 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
 
     # dumps helpers
     def dumps(self, obj: Any | None = None, auto_indent: bool | None = None) -> str:
-        """Serialize pure data, then restore comments into the emitted JSON text."""
+        """Serialize pure data, then restore comments into the emitted JSON text.
+
+        Comment trivia aims to round-trip with high fidelity. Data containers may still
+        be reformatted by the active dump function after edits.
+        """
         cls = type(self)
         if auto_indent is not None:
             old_auto_indent = cls.auto_indent
@@ -656,18 +677,29 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             if container is None:
                 return raw
 
-            edits: list[tuple[int, str]] = []
+            edits: list[tuple[int, int, str]] = []
             self.__dumps_plan_container(self, container, byte, edits)
             if not edits:
                 return raw
 
             out = raw
-            for offset, text in sorted(edits, key=lambda item: item[0], reverse=True):
-                out = out[:offset] + text + out[offset:]
+            for start, end, text in sorted(
+                edits, key=lambda item: (item[0], item[1]), reverse=True
+            ):
+                out = out[:start] + text + out[end:]
         finally:
             if auto_indent is not None:
                 cls.auto_indent = old_auto_indent
         return out
+
+    def __dumps_use_verbatim_gap(self, comment: str) -> bool:
+        """Treat loaded gap text as verbatim when it keeps outer whitespace."""
+        return bool(comment) and (
+            comment[:1].isspace()
+            or comment[-1:].isspace()
+            or comment.startswith(",")
+            or comment.endswith(",")
+        )
 
     def __dumps_export_value(self, owner: Self | None, value: Any) -> Any:
         """Build a dump-ready plain object, applying slash-dash markers from comments."""
@@ -772,7 +804,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         pair: ts.Node,
         key: Any,
         byte: bytes,
-        edits: list[tuple[int, str]],
+        edits: list[tuple[int, int, str]],
     ) -> None:
         """Plan intra-pair comment insertions for one object item."""
         slots = self.__dumps_pair_slot_comments(owner, key)
@@ -781,39 +813,51 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         _, colon, value = self.__loads_pair_slots(pair)
         indent = self.__dumps_container_indent(byte, pair.start_byte)
         if comment := slots.get(CommentIn("k", ":")):
-            edits.append(
-                (
-                    colon.start_byte,
-                    self.__dumps_format_inline_comment(
-                        comment, indent, suffix_space=True
-                    ),
+            if self.__dumps_use_verbatim_gap(comment):
+                edits.append((pair.child_by_field_name("key").end_byte, colon.start_byte, comment))  # type: ignore[union-attr]
+            else:
+                edits.append(
+                    (
+                        colon.start_byte,
+                        colon.start_byte,
+                        self.__dumps_format_inline_comment(
+                            comment, indent, suffix_space=True
+                        ),
+                    )
                 )
-            )
         if comment := slots.get(CommentIn(":", "v")):
             target = value.start_byte if value is not None else colon.end_byte
-            edits.append(
-                (
-                    target,
-                    self.__dumps_format_inline_comment(
-                        comment, indent, suffix_space=True
-                    ),
+            if self.__dumps_use_verbatim_gap(comment):
+                edits.append((colon.end_byte, target, comment))
+            else:
+                edits.append(
+                    (
+                        target,
+                        target,
+                        self.__dumps_format_inline_comment(
+                            comment, indent, suffix_space=True
+                        ),
+                    )
                 )
-            )
         if comment := slots.get(CommentIn("v", ",")):
-            target = value.end_byte if value is not None else pair.end_byte
-            edits.append(
-                (
-                    target,
-                    self.__dumps_format_inline_comment(comment, indent),
+            value_end = value.end_byte if value is not None else pair.end_byte
+            if self.__dumps_use_verbatim_gap(comment):
+                edits.append((value_end, pair.end_byte, comment))
+            else:
+                edits.append(
+                    (
+                        value_end,
+                        value_end,
+                        self.__dumps_format_inline_comment(comment, indent),
+                    )
                 )
-            )
 
     def __dumps_plan_container(
         self,
         owner: Self,
         container: ts.Node,
         byte: bytes,
-        edits: list[tuple[int, str]],
+        edits: list[tuple[int, int, str]],
     ) -> None:
         """Walk one serialized container and queue all comment restorations."""
         items = [
@@ -822,6 +866,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             if self.__loads_is_item(container, child)
         ]
         prev_key = NONE
+        gap_start = container.start_byte + 1
 
         for index, item in enumerate(items):
             key = (
@@ -830,15 +875,20 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 else index
             )
             if comment := owner.comments.get(CommentIn(prev_key, key)):
-                indent = self.__dumps_container_indent(byte, item.start_byte)
-                edits.append(
-                    (
-                        self.__dumps_line_start(byte, item.start_byte),
-                        self.__dumps_format_between_comment(
-                            byte, item.start_byte, cast(str, comment), indent
-                        ),
+                comment = cast(str, comment)
+                if self.__dumps_use_verbatim_gap(comment):
+                    edits.append((gap_start, item.start_byte, comment))
+                else:
+                    indent = self.__dumps_container_indent(byte, item.start_byte)
+                    edits.append(
+                        (
+                            self.__dumps_line_start(byte, item.start_byte),
+                            self.__dumps_line_start(byte, item.start_byte),
+                            self.__dumps_format_between_comment(
+                                byte, item.start_byte, comment, indent
+                            ),
+                        )
                     )
-                )
             if container.type == "object":
                 self.__dumps_plan_pair_comments(owner, item, key, byte, edits)
             value = item.child_by_field_name("value") or item
@@ -847,22 +897,33 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 if isinstance(child_owner, jsoncDict):
                     self.__dumps_plan_container(child_owner, value, byte, edits)
             prev_key = key
+            gap_start = item.end_byte
+            for child in container.children:
+                if child.type == "," and child.start_byte >= item.end_byte:
+                    gap_start = child.end_byte
+                    break
 
         if comment := owner.comments.get(CommentIn(prev_key, NONE)):
-            close = container.children[-1]
-            indent = (
-                self.__dumps_container_indent(byte, items[-1].start_byte)
-                if items
-                else self.__dumps_container_indent(byte, close.start_byte)
-            )
-            edits.append(
-                (
-                    self.__dumps_line_start(byte, close.start_byte),
-                    self.__dumps_format_between_comment(
-                        byte, close.start_byte, cast(str, comment), indent
-                    ),
+            close_start = container.end_byte - 1
+            comment = cast(str, comment)
+            if self.__dumps_use_verbatim_gap(comment):
+                edits.append((gap_start, close_start, comment))
+            else:
+                close = container.children[-1]
+                indent = (
+                    self.__dumps_container_indent(byte, items[-1].start_byte)
+                    if items
+                    else self.__dumps_container_indent(byte, close.start_byte)
                 )
-            )
+                edits.append(
+                    (
+                        self.__dumps_line_start(byte, close.start_byte),
+                        self.__dumps_line_start(byte, close.start_byte),
+                        self.__dumps_format_between_comment(
+                            byte, close.start_byte, comment, indent
+                        ),
+                    )
+                )
 
     def _dumps_add_indent(self, comment: str, indent: str) -> str:
         """add indent before comment, used in restore phase"""
@@ -870,7 +931,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             return comment
         return comment.replace("\n", "\n" + indent)
 
-    def hidden_keys(self) -> set[Any]:
+    def keys_hidden(self) -> set[Any]:
         """Return runtime-hidden data keys stored in `comments` at the current depth."""
         return {key for key in self.comments if not is_comment(key)}
 
@@ -986,7 +1047,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
             `CommentIn(last_key, NONE), str` for trailing comments.
         """
         prev_key = NONE
-        hidden_keys = self.hidden_keys()
+        hidden_keys = self.keys_hidden()
 
         for key, _ in self.__data_items():
             comment = self.comments.get(CommentIn(prev_key, key))
@@ -1017,9 +1078,9 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
         for _, value in self.items():
             yield value
 
-    def clear(self) -> Self:  # type: ignore
+    def del_commented_data(self) -> Self:  # type: ignore
         """Permanently delete runtime-hidden keys in this tree and all children, this cannot be revoked"""
-        hidden_keys = self.hidden_keys()
+        hidden_keys = self.keys_hidden()
         items = list(self.__data_items())
 
         for key, _ in items:
@@ -1027,7 +1088,7 @@ class jsoncDict[K = str, V = Any](MutableMapping[K, V]):
                 continue
             value = self.__children_get(key)
             if isinstance(value, jsoncDict):
-                value.clear()
+                value.del_commented_data()
 
         delete_keys = [key for key, _ in items if key in hidden_keys]
         if not isinstance(self.data.v, Mapping):

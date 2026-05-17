@@ -19,9 +19,7 @@
 > [!WARNING]
 > 项目当前为 `0.2.x`，仍在持续演进。
 
-## 用法
-
-### 安装
+## 安装
 
 ```bash
 pip install "jsonc-sdict[full]"
@@ -33,74 +31,35 @@ pip install "jsonc-sdict[full]"
 pip install -e ".[dev]"
 ```
 
-### 快速上手
+## 用法
+
+### jsonc
+
+用 `CommentIn` 标记注释位置，见 [test_jsonc.py](./test/test_jsonc.py)：
 
 ```python
-import hjson
 from jsonc_sdict import jsoncDict, CommentIn, NONE
 
-raw = """
-{
-  "a": 1,
-  "b": 2
-}
-""".strip()
-
-jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
+jc = jsoncDict(
+    {
+        CommentIn(NONE, "a"): "// before a",
+        "a": 1,
+        CommentIn("a", "b"): "// between a and b",
+        "b": 2,
+    }
+)
+jc[CommentIn("b")] = {CommentIn(":", "v"): "/* before value */"}
 jc["b"] = 3
-jc[CommentIn(NONE, "a")] = "// inserted before a"
 
 print(jc.full)
 ```
-
-### 进阶用法
-
-```python
-import hjson
-from jsonc_sdict import jsoncDict, CommentIn, NONE
-
-raw = """
-// header
-{
-  "a": 1, // inline
-  "b": 2
-}
-// footer
-""".strip()
-
-jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
-jc[CommentIn(NONE, "a")] = "// before a"
-jc[CommentIn("a")] = {
-    CommentIn("k", ":"): "/* key slot */",
-    CommentIn(":", "v"): "/* value slot */",
-    CommentIn("v", ","): "/* tail slot */",
-}
-
-print(jc.full)
-```
-
-### 注释模型
-
-`jsoncDict.comments` 使用 `CommentIn(...)` 记录注释位置。
 
 - `CommentIn(left, right)` 表示两个逻辑项之间的注释。
-- `CommentIn(key)` 表示挂在一个 pair 内部槽位上的注释。
-- 槽位注释使用字典，键为 `CommentIn("k", ":")`、`CommentIn(":", "v")`、`CommentIn("v", ",")`。
-- `CommentIn(NONE, first_key)` 和 `CommentIn(last_key, NONE)` 处理边界注释。
+- `CommentIn(key)` 表示单个键值对内部 `k:` / `:v` / `v,` 槽位上的注释。
 
-示例：
+如果输入是 JSONC/HJSON 文本而不是映射对象，用 `jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)`。
 
-```python
-jc.comments[CommentIn("a", "b")] = "// between a and b"
-jc.comments[CommentIn("b")] = {
-    CommentIn("k", ":"): "/* before colon */",
-    CommentIn(":", "v"): "/* before value */",
-}
-```
-
-### 边界情况
-
-以下 JSONC 写法非法：
+#### 非法 JSONC 示例
 
 ```jsonc
 // /* 这依然是单行注释
@@ -109,6 +68,97 @@ jc.comments[CommentIn("b")] = {
 
 ```jsonc
 /* // 这是多行注释 */ trailing-text-is-illegal
+```
+
+### sdict
+
+见 [test_sdict.py](./test/test_sdict.py)。
+
+#### 常用操作
+
+```python
+from jsonc_sdict import sdict
+
+data = sdict({"node": {"items": [0, {"value": 1}]}, "a": 1, "b": 2, "c": 2})
+
+print(data["node", "items", 1, "value"])
+data["node", "items", 1, "value"] = 2
+
+node = data["node"]
+print(node.keypath)
+print(node.parent is data)
+
+data.insert({"x": 9}, key="a", after=True)
+data.rename_key("x", "y")
+data.sort(reverse=True)
+
+print(list(data.items()))
+print(data.unref())
+```
+
+### 合并merge()
+
+基于 [DeepDiff](https://zepworks.com/deepdiff/current/)，详见 [Merge](#merge)。
+
+```python
+from functools import partial
+from jsonc_sdict import get1, merge
+
+old = {"children": [{"id": 1, "name": "1", "old": None}]}
+new = {"children": [{"id": 1, "name": "2", "new": ""}, {"id": 2, "name": "3"}]}
+
+result = merge(
+    (old, new),
+    dictDict={"value_of_idKey": partial(get1.item, keys="id")},
+    unMergeable="new",
+)()
+
+print(result)
+```
+
+### Merge
+
+最短写法是 `merge((old, new))()`。如果是 `list[dict]`，通常要传 `dictDict=...`，先按 id 之类的键做匹配，再进行 diff / merge。
+
+```python
+from functools import partial
+from jsonc_sdict import get1, merge
+
+old = {"items": [{"id": 1, "name": "old", "keep": True}]}
+new = {"items": [{"id": 1, "name": "new"}, {"id": 2, "name": "add"}]}
+
+merged = merge(
+    (old, new),
+    dictDict={"value_of_idKey": partial(get1.item, keys="id")},
+    unMergeable="new",
+)()
+
+print(merged)
+```
+
+#### CLI 命令行合并
+
+```bash
+deep-merge -i '{a:{b:1}}' '{a:{b:2}}' -fo json -m new
+# {"a": {"b": 2}}
+```
+
+### GetSetDel
+
+见 [test_get_set_del.py](./test/test_get_set_del.py)：
+
+```python
+from jsonc_sdict import get1, set1
+from jsonc_sdict.GetSetDel import del1
+
+obj = {"a": {"b": 1}}
+
+print(get1.item(obj, ("a", "b")))
+print(set1.item(obj, ("a", "b"), 2))
+print(set1.item(obj, ("a", "c"), 3))
+del1.item(obj, ("a", "b"))
+
+print(obj)
 ```
 
 ## 开发&调试

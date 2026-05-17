@@ -19,9 +19,7 @@ Round-trip comments for JSONC/HJSON, with dict-like APIs for config editing.
 > [!WARNING]
 > This project is currently `0.2.x` and still evolving.
 
-## Usage
-
-### Install
+## Install
 
 ```bash
 pip install "jsonc-sdict[full]"
@@ -33,74 +31,35 @@ For local development:
 pip install -e ".[dev]"
 ```
 
-### Quick usage
+## Usage
+
+### jsonc
 
 ```python
-import hjson
 from jsonc_sdict import jsoncDict, CommentIn, NONE
 
-raw = """
-{
-  "a": 1,
-  "b": 2
-}
-""".strip()
-
-jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
+jc = jsoncDict(
+    {
+        CommentIn(NONE, "a"): "// before a",
+        "a": 1,
+        CommentIn("a", "b"): "// between a and b",
+        "b": 2,
+    }
+)
+jc[CommentIn("b")] = {CommentIn(":", "v"): "/* before value */"}
 jc["b"] = 3
-jc[CommentIn(NONE, "a")] = "// inserted before a"
 
 print(jc.full)
 ```
 
-### Advanced usage
-
-```python
-import hjson
-from jsonc_sdict import jsoncDict, CommentIn, NONE
-
-raw = """
-// header
-{
-  "a": 1, // inline
-  "b": 2
-}
-// footer
-""".strip()
-
-jc = jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)
-jc[CommentIn(NONE, "a")] = "// before a"
-jc[CommentIn("a")] = {
-    CommentIn("k", ":"): "/* key slot */",
-    CommentIn(":", "v"): "/* value slot */",
-    CommentIn("v", ","): "/* tail slot */",
-}
-
-print(jc.full)
-```
-
-### Comment model
-
-`jsoncDict.comments` stores comment positions with `CommentIn(...)` keys.
+Use `CommentIn` to mark comment positions. See [test_jsonc.py](./test/test_jsonc.py).
 
 - `CommentIn(left, right)` means a comment between two logical items.
-- `CommentIn(key)` means comments attached to one pair's internal slots.
-- Slot comments use a dict with `CommentIn("k", ":")`, `CommentIn(":", "v")`, `CommentIn("v", ",")`.
-- `CommentIn(NONE, first_key)` and `CommentIn(last_key, NONE)` handle boundary comments.
+- `CommentIn(key)` means comments attached to one pair's internal `k:` / `:v` / `v,` slots.
 
-Examples:
+If you start from JSONC/HJSON text instead of a mapping, use `jsoncDict(raw, loads=hjson.loads, dumps=hjson.dumps)`.
 
-```python
-jc.comments[CommentIn("a", "b")] = "// between a and b"
-jc.comments[CommentIn("b")] = {
-    CommentIn("k", ":"): "/* before colon */",
-    CommentIn(":", "v"): "/* before value */",
-}
-```
-
-### Edge cases
-
-Invalid JSONC examples:
+#### Invalid JSONC examples
 
 ```jsonc
 // /* this is still single-line comment
@@ -111,11 +70,102 @@ so this line is illegal */
 /* // this is block comment */ trailing-text-is-illegal
 ```
 
+### sdict
+
+See [test_sdict.py](./test/test_sdict.py).
+
+#### Common operations
+
+```python
+from jsonc_sdict import sdict
+
+data = sdict({"node": {"items": [0, {"value": 1}]}, "a": 1, "b": 2, "c": 2})
+
+print(data["node", "items", 1, "value"])
+data["node", "items", 1, "value"] = 2
+
+node = data["node"]
+print(node.keypath)
+print(node.parent is data)
+
+data.insert({"x": 9}, key="a", after=True)
+data.rename_key("x", "y")
+data.sort(reverse=True)
+
+print(list(data.items()))
+print(data.unref())
+```
+
+### merge()
+
+Based on [DeepDiff](https://zepworks.com/deepdiff/current/). See [Merge](#deep-Merge).
+
+```python
+from functools import partial
+from jsonc_sdict import get1, merge
+
+old = {"children": [{"id": 1, "name": "1", "old": None}]}
+new = {"children": [{"id": 1, "name": "2", "new": ""}, {"id": 2, "name": "3"}]}
+
+result = merge(
+    (old, new),
+    dictDict={"value_of_idKey": partial(get1.item, keys="id")},
+    unMergeable="new",
+)()
+
+print(result)
+```
+
+### deep-Merge
+
+`merge((old, new))()` is the shortest form. For `list[dict]`, pass `dictDict=...` so items can be matched by an id-like key before diff/merge.
+
+```python
+from functools import partial
+from jsonc_sdict import get1, merge
+
+old = {"items": [{"id": 1, "name": "old", "keep": True}]}
+new = {"items": [{"id": 1, "name": "new"}, {"id": 2, "name": "add"}]}
+
+merged = merge(
+    (old, new),
+    dictDict={"value_of_idKey": partial(get1.item, keys="id")},
+    unMergeable="new",
+)()
+
+print(merged)
+```
+
+#### CLI merge
+
+```bash
+deep-merge -i '{a:{b:1}}' '{a:{b:2}}' -fo json -m new
+# {"a": {"b": 2}}
+```
+
+### GetSetDel
+
+See [test_get_set_del.py](./test/test_get_set_del.py).
+
+```python
+from jsonc_sdict import get1, set1
+from jsonc_sdict.GetSetDel import del1
+
+obj = {"a": {"b": 1}}
+
+print(get1.item(obj, ("a", "b")))
+print(set1.item(obj, ("a", "b"), 2))
+print(set1.item(obj, ("a", "c"), 3))
+del1.item(obj, ("a", "b"))
+
+print(obj)
+```
+
 ## Develop
 
 ### env
 
-`LOG=DEBUG` enables debug-level logging in project loggers.
+`LOG=DEBUG` enables debug-level logging.
 
 Common setup:
 
